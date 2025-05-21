@@ -18,6 +18,9 @@ public class ConfigData {
     @Comment("Don't send backup status at all")
     public boolean do_not_notify = false;
 
+    @Comment("Logging level for FTB Backups. Valid options: DEBUG, INFO, WARN, ERROR. DEBUG adds detailed logs to debug.log.")
+    public String logging_level = "INFO";
+
     @Comment("Backup retention mode. Valid Modes: MAX_BACKUPS, TIERED\nNote: TIERED mode is an experimental feature, Use at your own risk.")
     public RetentionMode retention_mode = RetentionMode.MAX_BACKUPS;
 

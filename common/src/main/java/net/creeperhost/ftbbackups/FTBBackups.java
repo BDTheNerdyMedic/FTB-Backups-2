@@ -9,8 +9,10 @@ import net.creeperhost.ftbbackups.commands.BackupCommand;
 import net.creeperhost.ftbbackups.config.Config;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.players.PlayerList;
+import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.logging.log4j.core.config.Configurator;
 import org.quartz.*;
 import org.quartz.impl.StdSchedulerFactory;
 
@@ -52,6 +54,7 @@ public class FTBBackups {
 
     public static void init() {
         Config.init(configFile.toFile());
+        setLoggerLevel(LOGGER, Config.cached().logging_level);
         if (!Config.cached().enabled) return; //If not enabled then just don't do anything!
         CommandRegistrationEvent.EVENT.register((dispatcher, registry, selection) -> dispatcher.register(BackupCommand.register()));
         LifecycleEvent.SERVER_STARTED.register(FTBBackups::serverStartedEvent);
@@ -84,6 +87,16 @@ public class FTBBackups {
             scheduler.scheduleJob(jobDetail, trigger);
         } catch (Exception e) {
             LOGGER.error("An error occurred while, starting backup scheduler", e);
+        }
+    }
+    
+    private static void setLoggerLevel(Logger logger, String levelName) {
+        try {
+            Level level = Level.toLevel(levelName);
+            Configurator.setLevel(logger.getName(), level);
+        } catch (IllegalArgumentException e) {
+            LOGGER.warn("Invalid logging level: {}. Defaulting to INFO.", levelName);
+            Configurator.setLevel(logger.getName(), Level.INFO);
         }
     }
 
