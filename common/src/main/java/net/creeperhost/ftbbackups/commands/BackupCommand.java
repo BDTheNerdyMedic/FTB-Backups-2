@@ -12,7 +12,6 @@ import net.minecraft.commands.Commands;
 import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.dedicated.DedicatedServer;
 
 import java.util.Locale;
 
@@ -42,20 +41,28 @@ public class BackupCommand {
 
     private static int execute(CommandContext<CommandSourceStack> cs, String command, String name) {
         boolean isProtected = command.toLowerCase(Locale.ROOT).equals("snapshot");
-        if (Config.cached().manual_backups_time == 0) {
-            BackupHandler.isDirty = true;
-            BackupHandler.createBackup(cs.getSource().getServer(), isProtected, name);
-        } else {
-            long configTimeFromMinutes = ((long) Config.cached().manual_backups_time) * 60_000;
-            long lastBackupWithConfig = lastManualBackupTime + configTimeFromMinutes;
+        int manualBackupsTime = Config.cached().manual_backups_time;
 
-            if (System.currentTimeMillis() > lastBackupWithConfig) {
-                lastManualBackupTime = System.currentTimeMillis();
-                BackupHandler.createBackup(cs.getSource().getServer(), isProtected, name);
-            } else {
-                cs.getSource().sendFailure(Component.literal("Unable to create backup, Last backup was taken less than " + Config.cached().max_backups + " Minutes ago"));
+        // Check cooldown if it exists
+        if (manualBackupsTime > 0) {
+            long configTimeFromMinutes = ((long) manualBackupsTime) * 60_000;
+            long lastBackupWithConfig = lastManualBackupTime + configTimeFromMinutes;
+            if (System.currentTimeMillis() <= lastBackupWithConfig) {
+                cs.getSource().sendFailure(
+                        Component.literal("Unable to create backup, last manual backup was taken less than "
+                                + manualBackupsTime + " minutes ago"));
+                return 0;
             }
         }
+
+        // Update timestamp if cooldown applies
+        if (manualBackupsTime > 0) {
+            lastManualBackupTime = System.currentTimeMillis();
+        }
+
+        // Perform the backup
+        BackupHandler.setDirty(true);
+        BackupHandler.createBackup(cs.getSource().getServer(), isProtected, name);
         return 0;
     }
 }

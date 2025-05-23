@@ -5,6 +5,7 @@ import java.util.List;
 
 public class Backups {
     private List<Backup> backups = new ArrayList<>();
+    private boolean isDirty = false;
 
     public void add(Backup backup) {
         backups.add(backup);
@@ -19,7 +20,7 @@ public class Backups {
     }
 
     public int unprotectedSize() {
-        return getBackups().stream().filter(backup ->!backup.isProtected()).toList().size();
+        return getBackups().stream().filter(backup -> !backup.isProtected()).toList().size();
     }
 
     public boolean contains(Backup backup) {
@@ -32,5 +33,13 @@ public class Backups {
 
     public List<Backup> getBackups() {
         return backups;
+    }
+
+    public boolean isDirty() {
+        return isDirty;
+    }
+
+    public void setIsDirty(boolean isDirty) {
+        this.isDirty = isDirty;
     }
 }

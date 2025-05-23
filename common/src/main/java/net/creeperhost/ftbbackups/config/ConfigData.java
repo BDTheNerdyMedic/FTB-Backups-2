@@ -6,96 +6,102 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class ConfigData {
-    @Comment("Allow the creation of backups automatically")
-    public boolean enabled = true;
 
-    @Comment("Permission level to use the /backup command")
-    public int command_permission_level = 3;
+        // General Backup Settings
+        @Comment("Enable automatic backups. Set to false to disable all backup functionality.")
+        public boolean enabled = true;
 
-    @Comment("Only send backup status to server ops")
-    public boolean notify_op_only = true;
+        @Comment("Permission level required to use the /backup command. Default is 3 (operator level).")
+        public int command_permission_level = 3;
 
-    @Comment("Don't send backup status at all")
-    public boolean do_not_notify = false;
+        @Comment("Notify only server operators about backup status. If false, all players receive notifications.")
+        public boolean notify_op_only = true;
 
-    @Comment("Backup retention mode. Valid Modes: MAX_BACKUPS, TIERED\nNote: TIERED mode is an experimental feature, Use at your own risk.")
-    public RetentionMode retention_mode = RetentionMode.MAX_BACKUPS;
+        @Comment("Disable all backup notifications to players and operators.")
+        public boolean do_not_notify = false;
 
-    @Comment("Applies to retention_mode:MAX_BACKUPS, Sets the maximum number of backups to keep")
-    public int max_backups = 5;
+        @Comment("Include backup file size in status messages.")
+        public boolean display_file_size = false;
 
-    @Comment("Applies to retention_mode:TIERED, The latest x number of backups will be retained")
-    public int keep_latest = 5;
+        @Comment("Enable status monitoring messages during backups. Set to false to disable.")
+        public boolean enable_status_monitoring = true;
 
-    @Comment("Applies to retention_mode:TIERED, Sets number of hourly backups to keep")
-    public int keep_hourly = 1;
+        @Comment("Logging level for FTB Backups. Valid options: DEBUG, INFO, WARN, ERROR. DEBUG adds detailed logs to debug.log.")
+        public String logging_level = "INFO";
 
-    @Comment("Applies to retention_mode:TIERED, Sets number of daily backups to keep")
-    public int keep_daily = 1;
+        // Backup Retention Settings
+        @Comment("Retention mode for backups. Options: MAX_BACKUPS (keep a fixed number), TIERED (experimental, retains backups by time tiers).")
+        public RetentionMode retention_mode = RetentionMode.MAX_BACKUPS;
 
-    @Comment("Applies to retention_mode:TIERED, Sets number of weekly backups to keep")
-    public int keep_weekly = 1;
+        @Comment("For MAX_BACKUPS mode: Maximum number of backups to keep. Older backups are deleted when this limit is exceeded.")
+        public int max_backups = 5;
 
-    @Comment("Applies to retention_mode:TIERED, Sets number of monthly backups to keep")
-    public int keep_monthly = 1;
+        @Comment("For TIERED mode: Number of most recent backups to always retain, regardless of age.")
+        public int keep_latest = 5;
 
-    @Comment("""
-            This is done with an implementation of cron from the Quartz java library.
-            More info here
-            (http://www.cronmaker.com)""")
-    public String backup_cron = "0 */30 * * * ?";
+        @Comment("For TIERED mode: Number of hourly backups to retain.")
+        public int keep_hourly = 1;
 
-    @Comment("Time between manual backups using the command")
-    public int manual_backups_time = 0;
+        @Comment("For TIERED mode: Number of daily backups to retain.")
+        public int keep_daily = 1;
 
-    @Comment("Only run a backup if a player has been online since the last backup")
-    public boolean only_if_players_been_online = true;
+        @Comment("For TIERED mode: Number of weekly backups to retain.")
+        public int keep_weekly = 1;
 
-    @Deprecated(forRemoval = true)
-    @Comment("Additional directories to include in backup")
-    public List<String> additional_directories = new ArrayList<>();
+        @Comment("For TIERED mode: Number of monthly backups to retain.")
+        public int keep_monthly = 1;
 
-    @Comment("""
-            Additional files and directories to include in backup.
-            Can specify a file name, path relative to server directory or wildcard file path
-            Examples:                       (All file paths are relative to server root)
-            fileName.txt                    Any/all file named "fileName.txt"
-            folder/file.txt                 Exact file path
-            folder/                         Everything in this folder
-            path/starts/with*               Any files who's path starts with
-            *path/ends/with.txt             Any files who's path ends with
-            *path/contains*                 Any files who's path contains
-            Note: You can now specify the entire minecraft server directory, but if you do this, you must change "backup_location" to a location
-            outside the server directory to avoid backing up previous backups.""")
-    public List<String> additional_files = new ArrayList<>();
+        // Backup Scheduling
+        @Comment("Cron expression for scheduling automatic backups. Default runs every 30 minutes. Generate expressions at http://www.cronmaker.com.")
+        public String backup_cron = "0 */30 * * * ?";
 
-    @Comment("Display file size in backup message")
-    public boolean display_file_size = false;
+        @Comment("Minimum time (in minutes) between manual backups via /backup. Set to 0 for no cooldown.")
+        public int manual_backups_time = 0;
 
-    @Comment("backup location, The default \".\" creates a folder called \"backups\" inside the server directory.")
-    public String backup_location = ".";
+        @Comment("Only create backups if a player has been online since the last backup. Prevents unnecessary backups on idle servers.")
+        public boolean only_if_players_been_online = true;
 
-    @Comment("Specify the backup format. Valid options are ZIP, ZSTD and DIRECTORY")
-    public Format backup_format = Format.ZIP;
+        // Backup Content
+        @Comment("""
+                        Additional files or directories to include in backups. Supports file names, paths, and wildcards (relative to server root).
+                        Examples:
+                          fileName.txt         - Any file named 'fileName.txt'
+                          folder/file.txt      - Specific file path
+                          folder/              - Entire folder contents
+                          path/starts/with*    - Files with paths starting with 'path/starts/with'
+                          *ends/with.txt       - Files ending with 'ends/with.txt'
+                        Note: To backup the entire server, set this and ensure 'backup_location' is outside the server directory.""")
+        public List<String> additional_files = new ArrayList<>();
 
-    @Comment("Minimum free disk space in MB. If a backup's creation would leave less than this amount of disk space remaining, the backup will be aborted.")
-    public long minimum_free_space = 500;
+        @Comment("""
+                        Files or directories to exclude from backups. Supports file names, paths, and wildcards (relative to server root).
+                        Examples:
+                          fileName.txt         - Any file named 'fileName.txt'
+                          folder/file.txt      - Specific file path
+                          folder/              - Entire folder contents
+                          path/starts/with*    - Files with paths starting with 'path/starts/with'
+                          *ends/with.txt       - Files ending with 'ends/with.txt'""")
+        public List<String> excluded = new ArrayList<>();
 
-    @Comment("If the previous backup failed due to lack of space, the oldest backup will be deleted to free space.")
-    public boolean free_space_if_needed = false;
+        // Backup Location and Format
+        @Comment("Backup storage location. Use '.' for the default 'backups' folder, or specify a full path. Must be outside server root if backing up everything.")
+        public String backup_location = ".";
 
-    @Comment("""
-            Specify files or folders to be excluded.
-            Can specify a file name, path relative to server directory or wildcard file path
-            Examples:                       (All file paths are relative to server root)
-            fileName.txt                    Any/all file named "fileName.txt"
-            folder/file.txt                 Exact file path
-            folder/                         Everything in this folder
-            path/starts/with*               Any files who's path starts with
-            *path/ends/with.txt             Any files who's path ends with
-            *path/contains*                 Any files who's path contains""")
-    public List<String> excluded = new ArrayList<>();
+        @Comment("Backup format. Options: ZIP (compressed archive), ZSTD (faster compression), DIRECTORY (uncompressed folder).")
+        public Format backup_format = Format.ZIP;
 
-    @Comment("The dimension used when creating backup preview image, specify \"all\" to enable automatic detection of primary dimension (can be very slow)\nSpecify \"none\" to disable preview")
-    public String preview_dimension = "minecraft:overworld";
+        // Disk Space Management
+        @Comment("Minimum free disk space (in MB) required to start a backup. Skips backup if this threshold isn’t met.")
+        public long minimum_free_space = 500;
+
+        @Comment("If a backup fails due to insufficient space, delete the oldest backup to free space and retry. Use cautiously.")
+        public boolean free_space_if_needed = false;
+
+        @Comment("The dimension used when creating backup preview image, specify \"all\" to enable automatic detection of primary dimension (can be very slow)\nSpecify \"none\" to disable preview")
+        public String preview_dimension = "minecraft:overworld";
+
+        // Deprecated Options
+        @Deprecated(forRemoval = true)
+        @Comment("Deprecated: Use 'additional_files' instead. This option will be removed in a future version.")
+        public List<String> additional_directories = new ArrayList<>();
 }
