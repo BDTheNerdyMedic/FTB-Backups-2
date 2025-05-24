@@ -47,8 +47,6 @@ public class Config {
                 newData.enable_preview = false;
                 newData.preview_dimension = "minecraft:overworld";
                 LOGGER.debug("Detected deprecated 'preview_dimension = none', setting 'enable_preview = false' and resetting to 'minecraft:overworld'");
-            } else {
-                newData.enable_preview = true; // Ensure enabled unless explicitly disabled
             }
 
             // Serialize current data to JSON without comments for comparison
