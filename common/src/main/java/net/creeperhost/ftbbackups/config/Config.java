@@ -22,7 +22,6 @@ import java.util.concurrent.atomic.AtomicReference;
  * and watching for changes.
  */
 public class Config {
-    // Define a logger specific to the Config class
     private static final Logger LOGGER = LogManager.getLogger(Config.class);
     private static AtomicReference<ConfigData> data = new AtomicReference<>();
     private static File lastFile;
@@ -31,9 +30,10 @@ public class Config {
     private static Jankson gson = Jankson.builder().build();
 
     /**
-     * Loads the configuration from the specified file.
+     * Loads the configuration from the specified file, handling deprecated options.
      *
      * @param file The configuration file to load.
+     * @return True if the configuration was loaded or updated, false if unchanged.
      */
     public static boolean loadFromFile(File file) {
         lastFile = file;
@@ -42,9 +42,18 @@ public class Config {
             JsonObject jObject = gson.load(file);
             ConfigData newData = gson.fromJson(jObject, ConfigData.class);
 
+            // Handle deprecated "none" value for preview_dimension
+            if ("none".equalsIgnoreCase(newData.preview_dimension)) {
+                newData.enable_preview = false;
+                newData.preview_dimension = "minecraft:overworld";
+                LOGGER.debug("Detected deprecated 'preview_dimension = none', setting 'enable_preview = false' and resetting to 'minecraft:overworld'");
+            } else {
+                newData.enable_preview = true; // Ensure enabled unless explicitly disabled
+            }
+
             // Serialize current data to JSON without comments for comparison
             String currentJson = data.get() != null ? gson.toJson(data.get()).toJson(JsonGrammar.COMPACT) : null;
-            String newJson = jObject.toJson(JsonGrammar.COMPACT);
+            String newJson = gson.toJson(newData).toJson(JsonGrammar.COMPACT);
 
             if (currentJson == null || !currentJson.equals(newJson)) {
                 data.set(newData);
@@ -128,12 +137,17 @@ public class Config {
     }
 
     /**
-     * Converts the current configuration data to a JSON string.
+     * Converts the current configuration data to a JSON string, ensuring deprecated values are not saved.
      *
      * @return The JSON representation of the configuration.
      */
     public static String saveConfig() {
         ConfigData conf = data.get();
+        // Prevent saving "none" for preview_dimension; use enable_preview instead
+        if (!conf.enable_preview && "none".equalsIgnoreCase(conf.preview_dimension)) {
+            conf.preview_dimension = "minecraft:overworld";
+            LOGGER.debug("Adjusted 'preview_dimension' to 'minecraft:overworld' since 'enable_preview' is false");
+        }
         JsonElement elem = gson.toJson(conf);
         return elem.toJson(true, true);
     }
@@ -141,8 +155,7 @@ public class Config {
     public static AtomicReference<WatchService> watcher = new AtomicReference<>();
 
     /**
-     * Initializes the configuration, setting up file watching for automatic
-     * reloads.
+     * Initializes the configuration, setting up file watching for automatic reloads.
      *
      * @param file The configuration file to use.
      */

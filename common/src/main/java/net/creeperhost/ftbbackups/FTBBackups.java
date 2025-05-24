@@ -149,11 +149,6 @@ public class FTBBackups {
         BackupHandler.init(minecraftServer);
         isShutdown = false;
 
-        // setLoggerLevel(LOGGER, Config.cached().logging_level);
-        // setLoggerLevel(configWatcherLogger, Config.cached().logging_level);
-        // setLoggerLevel(backupCleanerLogger, Config.cached().logging_level);
-        // setLoggerLevel(backupExecutorLogger, Config.cached().logging_level);
-
         LOGGER.info("Server started, backup handler initialized.");
     }
 

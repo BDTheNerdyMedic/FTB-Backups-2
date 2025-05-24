@@ -97,8 +97,18 @@ public class ConfigData {
         @Comment("If a backup fails due to insufficient space, delete the oldest backup to free space and retry. Use cautiously.")
         public boolean free_space_if_needed = false;
 
-        @Comment("The dimension used when creating backup preview image, specify \"all\" to enable automatic detection of primary dimension (can be very slow)\nSpecify \"none\" to disable preview")
+        // Backup Preview Options
+        @Comment("Enable backup preview generation. Set to false to disable.")
+        public boolean enable_preview = true;
+
+        @Comment("The dimension used for generating the backup preview image.\n" +
+            "- Set to a specific dimension (e.g., \"minecraft:overworld\") to always use that dimension.\n" +
+            "- Set to \"all\" to automatically detect the primary dimension based on activity (can be slow).\n" +
+            "Note: The \"none\" option is deprecated; use 'enable_preview' set to false to disable previews.")
         public String preview_dimension = "minecraft:overworld";
+
+        @Comment("List of dimensions to consider when 'preview_dimension' is set to 'all'. If empty, all dimensions are scanned.")
+        public List<String> preview_dimensions_list = new ArrayList<>();
 
         // Deprecated Options
         @Deprecated(forRemoval = true)

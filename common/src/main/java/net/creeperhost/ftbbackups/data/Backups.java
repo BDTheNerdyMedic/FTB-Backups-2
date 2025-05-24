@@ -6,6 +6,7 @@ import java.util.List;
 public class Backups {
     private List<Backup> backups = new ArrayList<>();
     private boolean isDirty = false;
+    private String worldHash = "";
 
     public void add(Backup backup) {
         backups.add(backup);
@@ -41,5 +42,13 @@ public class Backups {
 
     public void setIsDirty(boolean isDirty) {
         this.isDirty = isDirty;
+    }
+    
+    public String getWorldHash() {
+        return worldHash;
+    }
+
+    public void setWorldHash(String worldHash) {
+        this.worldHash = worldHash;
     }
 }

@@ -35,6 +35,8 @@ import java.nio.charset.Charset;
 import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -46,7 +48,6 @@ import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -65,6 +66,7 @@ public class BackupHandler {
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
     private static final LevelPreview PREVIEW = new LevelPreview(new MCNBTImpl());
+    private static String lastPreview = "";
 
     private static Path serverRoot;
     private static Path backupFolderPath;
@@ -147,34 +149,61 @@ public class BackupHandler {
 
     /**
      * Generates a preview image for the backup if enabled in the configuration.
+     * Returns an empty string if 'enable_preview' is false, 'preview_dimension' is "none", or generation fails.
      *
      * @param minecraftServer The Minecraft server instance.
      * @return A base64-encoded string of the preview image or an empty string if disabled or failed.
      */
     public static String createPreview(MinecraftServer minecraftServer) {
-        FTBBackups.LOGGER.info("Generating backup preview...");
+        if (!Config.cached().enable_preview) {
+            FTBBackups.LOGGER.info("Backup preview disabled in configuration.");
+            return "";
+        }
+
+        String currentWorldHash = calculateWorldHash(minecraftServer);
+        String storedWorldHash = backups.get().getWorldHash();
+
+        if (currentWorldHash.equals(storedWorldHash) && !lastPreview.isEmpty()) {
+            FTBBackups.LOGGER.info("World state unchanged, reusing cached preview.");
+            return lastPreview;
+        }
+
+        FTBBackups.LOGGER.info("Starting backup preview generation...");
+        long startTime = System.currentTimeMillis();
         try {
             String previewDim = Config.cached().preview_dimension;
-            if (previewDim.toLowerCase(Locale.ROOT).equals("none")) {
-                FTBBackups.LOGGER.info("Preview disabled in configuration.");
-                return "";
-            }
+            FTBBackups.LOGGER.debug("Preview dimension: {}", previewDim);
 
-            long scanStart = System.currentTimeMillis();
             Path worldPath = minecraftServer.getWorldPath(LevelResource.ROOT).toAbsolutePath();
             FTBBackups.LOGGER.debug("Loading world from path: {}", worldPath);
             PREVIEW.loadWorld(worldPath);
             LevelIO levelIO = PREVIEW.getLevelIO();
+            FTBBackups.LOGGER.debug("LevelIO initialized.");
 
             CaptureArea area;
-
             if ("all".equals(previewDim)) {
-                FTBBackups.LOGGER.debug("Scanning all dimensions for activity clusters...");
+                FTBBackups.LOGGER.debug("Scanning dimensions for activity clusters...");
                 List<ActivityScanner> scanners = new ArrayList<>();
-                for (Level level : levelIO.getLevels()) {
-                    ActivityScanner scanner = new ActivityScanner(levelIO, level, 1);
-                    if (scanner.findActivityClusters(512, 512, 1)) {
-                        scanners.add(scanner);
+                List<String> dimensionsToScan = Config.cached().preview_dimensions_list;
+                if (dimensionsToScan.isEmpty()) {
+                    FTBBackups.LOGGER.debug("No specific dimensions listed, scanning all available dimensions.");
+                    for (Level level : levelIO.getLevels()) {
+                        ActivityScanner scanner = new ActivityScanner(levelIO, level, 1);
+                        if (scanner.findActivityClusters(512, 512, 1)) {
+                            scanners.add(scanner);
+                        }
+                    }
+                } else {
+                    for (String dim : dimensionsToScan) {
+                        Level level = levelIO.getLevel(dim);
+                        if (level != null) {
+                            ActivityScanner scanner = new ActivityScanner(levelIO, level, 1);
+                            if (scanner.findActivityClusters(512, 512, 1)) {
+                                scanners.add(scanner);
+                            }
+                        } else {
+                            FTBBackups.LOGGER.warn("Dimension {} not found, skipping.", dim);
+                        }
                     }
                 }
 
@@ -211,22 +240,132 @@ public class BackupHandler {
                     .captureArea(area)
                     .doCapture()
                     .getImage();
-
-            PREVIEW.close();
+            FTBBackups.LOGGER.debug("Capture completed.");
 
             ByteArrayOutputStream os = new ByteArrayOutputStream();
             SimplePNG.writePNG(os, capture);
             byte[] image = os.toByteArray();
 
+            String newPreview = "data:image/png;base64, " + Base64.getEncoder().encodeToString(image);
             FTBBackups.LOGGER.info("Backup preview created. Scan took {}ms, Capture took {}ms",
-                    captureStart - scanStart, System.currentTimeMillis() - captureStart);
-            return "data:image/png;base64, " + Base64.getEncoder().encodeToString(image);
+                    captureStart - startTime, System.currentTimeMillis() - captureStart);
+
+            lastPreview = newPreview;
+            backups.get().setWorldHash(currentWorldHash);
+            return newPreview;
         } catch (Exception ex) {
             FTBBackups.LOGGER.error("Error generating backup preview", ex);
             return "";
+        } finally {
+            try {
+                PREVIEW.close();
+                FTBBackups.LOGGER.debug("LevelPreview closed successfully.");
+            } catch (Exception e) {
+                FTBBackups.LOGGER.error("Error closing LevelPreview", e);
+            }
         }
     }
-    
+
+    /**
+     * Calculates a hash representing the state of region files for specified dimensions.
+     * 
+     * @param minecraftServer The server instance to access world data.
+     * @return A hexadecimal string of the SHA-256 hash, or an empty string if an error occurs.
+     */
+    private static String calculateWorldHash(MinecraftServer minecraftServer) {
+        String previewDim = Config.cached().preview_dimension;
+        List<ResourceLocation> dimensionsToHash = new ArrayList<>();
+
+        // Determine which dimensions to hash
+        if (!"all".equals(previewDim)) {
+            ResourceLocation dimLocation = parseDimensionString(previewDim);
+            if (dimLocation != null) {
+                dimensionsToHash.add(dimLocation);
+            } else {
+                FTBBackups.LOGGER.warn("Invalid preview_dimension: {}, falling back to overworld", previewDim);
+                dimensionsToHash.add(ResourceLocation.fromNamespaceAndPath("minecraft", "overworld"));
+            }
+        } else {
+            for (ServerLevel level : minecraftServer.getAllLevels()) {
+                dimensionsToHash.add(level.dimension().location());
+            }
+            dimensionsToHash.sort(Comparator.comparing(ResourceLocation::toString)); // Ensure consistent order
+        }
+
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            for (ResourceLocation dim : dimensionsToHash) {
+                Path regionDir = getRegionDirPath(minecraftServer, dim);
+                if (Files.exists(regionDir)) {
+                    try (Stream<Path> walk = Files.walk(regionDir, 1)) {
+                        List<Path> regionFiles = walk
+                                .filter(Files::isRegularFile)
+                                .filter(path -> path.getFileName().toString().matches("r\\.\\d+\\.\\d+\\.mca"))
+                                .sorted() // Ensure consistent file order
+                                .collect(Collectors.toList());
+                        for (Path file : regionFiles) {
+                            long size = Files.size(file);
+                            long lastModified = Files.getLastModifiedTime(file).toMillis();
+                            String fileInfo = dim.toString() + ":" + file.getFileName().toString() + ":" + size + ":"
+                                    + lastModified;
+                            digest.update(fileInfo.getBytes());
+                        }
+                    }
+                }
+            }
+            byte[] hashBytes = digest.digest();
+            return bytesToHex(hashBytes);
+        } catch (NoSuchAlgorithmException | IOException e) {
+            FTBBackups.LOGGER.warn("Error calculating world hash", e);
+            return "";
+        }
+    }
+
+    /**
+     * Parses a dimension string into a ResourceLocation.
+     * 
+     * @param dimString The dimension string, e.g., "minecraft:overworld".
+     * @return A ResourceLocation object, or null if the string is invalid.
+     */
+    private static ResourceLocation parseDimensionString(String dimString) {
+        String[] parts = dimString.split(":");
+        if (parts.length == 2) {
+            return ResourceLocation.fromNamespaceAndPath(parts[0], parts[1]);
+        }
+        return null;
+    }
+
+    /**
+     * Gets the region directory path for a given dimension.
+     * 
+     * @param server            The server instance.
+     * @param dimensionLocation The dimension's ResourceLocation.
+     * @return The Path to the region directory.
+     */
+    private static Path getRegionDirPath(MinecraftServer server, ResourceLocation dimensionLocation) {
+        Path worldPath = server.getWorldPath(LevelResource.ROOT).toAbsolutePath();
+        if (dimensionLocation.getNamespace().equals("minecraft") && dimensionLocation.getPath().equals("overworld")) {
+            return worldPath.resolve("region");
+        } else {
+            String dimensionPath = "dimensions/" + dimensionLocation.getNamespace() + "/" + dimensionLocation.getPath();
+            return worldPath.resolve(dimensionPath).resolve("region");
+        }
+    }
+
+    /**
+     * Converts a byte array to a hexadecimal string.
+     * 
+     * @param bytes The byte array to convert.
+     * @return The hexadecimal representation.
+     */
+    private static String bytesToHex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder();
+        for (byte b : bytes) {
+            sb.append(String.format("%02x", b));
+        }
+        return sb.toString();
+    }
+
     /**
      * Checks if a backup is currently in progress.
      *
@@ -259,19 +398,29 @@ public class BackupHandler {
             return;
         }
 
-        Path backupLocation = setupBackupEnvironment(minecraftServer, name);
-        if (backupLocation == null) {
+        BackupSetup setup = setupBackupEnvironment(minecraftServer, name);
+        if (setup.backupLocation == null) {
             FTBBackups.LOGGER.warn("Backup environment setup failed.");
             return;
         }
 
         Format format = Config.cached().backup_format;
+        // Create a new Backup object with the necessary details
         Backup backup = new Backup(
-                worldFolder.normalize().getFileName().toString(),
-                lastAutoBackup,
-                backupLocation.toString(),
-                0, 1, "", backupPreview.get(), protect, name, format, false);
-        FTBBackups.LOGGER.debug("Adding new backup: {} at {}", Path.of(backup.getBackupLocation()).getFileName(),
+                worldFolder.normalize().getFileName().toString(), // World folder name
+                lastAutoBackup,                                   // Timestamp of the last backup
+                setup.backupLocation.toString(),                  // Backup location path
+                0, 1, "",                         // Default values for size, count, and description
+                backupPreview.get(),                              // Backup preview setting
+                protect,                                          // Protection flag
+                name,                                             // Backup name
+                format,                                           // Backup format
+                false                                    // Not a manual backup
+        );
+
+        // Log the addition of the new backup
+        FTBBackups.LOGGER.debug("Adding new backup: {} at {}",
+                Path.of(backup.getBackupLocation()).getFileName(),
                 new Date(backup.getCreateTime()));
         synchronized (BACKUP_LOCK) {
             addBackup(backup);
@@ -281,12 +430,15 @@ public class BackupHandler {
         }
 
         AtomicLong startTime = new AtomicLong(System.nanoTime());
-        currentFuture = CompletableFuture.runAsync(() -> {
-            performBackup(minecraftServer, backupLocation, format);
+
+        // Chain the backup operation to the save future
+        currentFuture = setup.saveFuture.thenRunAsync(() -> {
+            performBackup(minecraftServer, setup.backupLocation, format);
         }, FTBBackups.backupExecutor).thenRun(() -> {
-            finalizeBackup(minecraftServer, backup, backupLocation, format, startTime);
+            finalizeBackup(minecraftServer, backup, setup.backupLocation, format, startTime);
             currentFuture = null;
         });
+
         FTBBackups.LOGGER.debug("Backup task scheduled on executor.");
     }
 
@@ -329,13 +481,14 @@ public class BackupHandler {
     }
 
     /**
-     * Sets up the environment for a backup, including saving the world and preparing the backup location.
+     * Sets up the environment for a backup, including saving the world and
+     * preparing the backup location.
      *
      * @param minecraftServer The Minecraft server instance.
      * @param name            The name of the backup.
-     * @return The Path to the backup location, or null if setup fails.
+     * @return A BackupSetup object containing the backup location and save future, or null if setup fails.
      */
-    private static Path setupBackupEnvironment(MinecraftServer minecraftServer, String name) {
+    private static BackupSetup setupBackupEnvironment(MinecraftServer minecraftServer, String name) {
         FTBBackups.LOGGER.info("Setting up backup environment for '{}'", name);
         String backupName = TieredBackupTest.getBackupName();
         Path backupLocation = backupFolderPath.resolve(backupName);
@@ -345,7 +498,8 @@ public class BackupHandler {
         FTBBackups.LOGGER.debug("Backup location set to: {}", backupLocation);
         FTBBackups.LOGGER.debug("Last auto backup time updated to: {}", new Date(lastAutoBackup));
 
-        CompletableFuture<?> saveOp = minecraftServer.submit(() -> {
+        // Submit the save operation and chain setNoSave to run after the save completes
+        CompletableFuture<Void> saveFuture = minecraftServer.submit(() -> {
             if (!minecraftServer.isCurrentlySaving()) {
                 FTBBackups.LOGGER.info("Saving world before backup...");
                 minecraftServer.saveEverything(true, false, true);
@@ -353,14 +507,15 @@ public class BackupHandler {
             } else {
                 FTBBackups.LOGGER.debug("World is already saving, skipping save operation.");
             }
-        });
-        setNoSave(minecraftServer, true);
+        }).thenRun(() -> setNoSave(minecraftServer, true));
+
         FTBBackups.LOGGER.info("Backup environment setup complete.");
-        return backupLocation;
+        return new BackupSetup(backupLocation, saveFuture);
     }
 
     /**
-     * Performs the actual backup operation, including saving the world and copying files.
+     * Performs the actual backup operation, including saving the world and copying
+     * files.
      *
      * @param minecraftServer The Minecraft server instance.
      * @param backupLocation  The location to save the backup.
@@ -370,14 +525,6 @@ public class BackupHandler {
         FTBBackups.LOGGER.info("Performing backup to: {}", backupLocation);
 
         try {
-            CompletableFuture<?> saveOp = minecraftServer.submit(() -> {
-            });
-            if (!saveOp.isDone()) {
-                FTBBackups.LOGGER.info("Waiting for world save to complete...");
-                saveOp.get(60, TimeUnit.SECONDS);
-                FTBBackups.LOGGER.debug("World save wait completed.");
-            }
-
             alertPlayers(minecraftServer, Component.translatable(FTBBackups.MOD_ID + ".backup.starting"));
             Path backupPath = backupLocation;
             List<Path> backupPaths = new LinkedList<>();
@@ -441,6 +588,8 @@ public class BackupHandler {
             } else {
                 FTBBackups.LOGGER.debug("Status monitoring disabled in config.");
             }
+
+            FTBBackups.LOGGER.debug("Generating backup preview before file operations...");
             backupPreview.set(createPreview(minecraftServer));
 
             FTBBackups.LOGGER.info("Starting backup operation with format: {}", format);
@@ -466,7 +615,8 @@ public class BackupHandler {
     }
 
     /**
-     * Finalizes the backup process, including calculating checksums and updating metadata.
+     * Finalizes the backup process, including calculating checksums and updating
+     * metadata.
      *
      * @param minecraftServer The Minecraft server instance.
      * @param backup          The backup object.
@@ -818,7 +968,8 @@ public class BackupHandler {
     }
 
     /**
-     * Computes which backups to retain based on the specified time unit and retention count.
+     * Computes which backups to retain based on the specified time unit and
+     * retention count.
      *
      * @param backups    The list of backups to evaluate.
      * @param retained   A map of backups to retain with their retention reasons.
@@ -1256,6 +1407,16 @@ public class BackupHandler {
             return 99;
         } else {
             return (int) roundedPercentage;
+        }
+    }
+
+    private static class BackupSetup {
+        final Path backupLocation;
+        final CompletableFuture<Void> saveFuture;
+
+        BackupSetup(Path backupLocation, CompletableFuture<Void> saveFuture) {
+            this.backupLocation = backupLocation;
+            this.saveFuture = saveFuture;
         }
     }
 }
