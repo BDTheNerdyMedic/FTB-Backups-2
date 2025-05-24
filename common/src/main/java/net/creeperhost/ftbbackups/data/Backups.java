@@ -5,8 +5,9 @@ import java.util.List;
 
 public class Backups {
     private List<Backup> backups = new ArrayList<>();
-    private boolean isDirty = false;
+    private boolean isDirty = true;
     private String worldHash = "";
+    private String lastPreview = "";
 
     public void add(Backup backup) {
         backups.add(backup);
@@ -50,5 +51,13 @@ public class Backups {
 
     public void setWorldHash(String worldHash) {
         this.worldHash = worldHash;
+    }
+
+    public String getLastPreview() {
+        return lastPreview;
+    }
+
+    public void setLastPreview(String lastPreview) {
+        this.lastPreview = lastPreview;
     }
 }

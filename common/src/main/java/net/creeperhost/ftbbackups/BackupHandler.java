@@ -66,7 +66,7 @@ public class BackupHandler {
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
     private static final LevelPreview PREVIEW = new LevelPreview(new MCNBTImpl());
-    private static String lastPreview = "";
+    public static String lastPreview = "";
 
     private static Path serverRoot;
     private static Path backupFolderPath;
@@ -120,9 +120,9 @@ public class BackupHandler {
             backupFolderPath = defaultBackupLocation;
         }
 
-        // createBackupFolder(defaultBackupLocation);
         createBackupFolder(backupFolderPath);
         loadJson();
+        lastPreview = backups.get().getLastPreview();
         initPreview();
         FTBBackups.LOGGER.debug("BackupHandler initialized successfully.");
     }
@@ -252,6 +252,7 @@ public class BackupHandler {
 
             lastPreview = newPreview;
             backups.get().setWorldHash(currentWorldHash);
+            backups.get().setLastPreview(newPreview);
             return newPreview;
         } catch (Exception ex) {
             FTBBackups.LOGGER.error("Error generating backup preview", ex);
@@ -393,6 +394,7 @@ public class BackupHandler {
      */
     public static void createBackup(MinecraftServer minecraftServer, boolean protect, String name) {
         FTBBackups.LOGGER.info("Starting backup process for '{}'", name);
+        worldFolder = minecraftServer.getWorldPath(LevelResource.ROOT).toAbsolutePath();
         if (shouldSkipBackup(minecraftServer)) {
             FTBBackups.LOGGER.info("Backup skipped due to conditions.");
             return;
@@ -433,7 +435,7 @@ public class BackupHandler {
 
         // Chain the backup operation to the save future
         currentFuture = setup.saveFuture.thenRunAsync(() -> {
-            performBackup(minecraftServer, setup.backupLocation, format);
+            performBackup(minecraftServer, setup.backupLocation, format, backup);
         }, FTBBackups.backupExecutor).thenRun(() -> {
             finalizeBackup(minecraftServer, backup, setup.backupLocation, format, startTime);
             currentFuture = null;
@@ -455,12 +457,16 @@ public class BackupHandler {
             return true;
         }
 
+        if (backups.get().getBackups().isEmpty()) {
+            FTBBackups.LOGGER.info("No backups found, proceeding with backup.");
+            return false;
+        }
+
         if (Config.cached().only_if_players_been_online && !isDirty()) {
             FTBBackups.LOGGER.info("Skipping backup: no players have been online since last backup.");
             return true;
         }
 
-        worldFolder = minecraftServer.getWorldPath(LevelResource.ROOT).toAbsolutePath();
         FTBBackups.LOGGER.info("World folder located at: {}", worldFolder);
 
         if (!canCreateBackup()) {
@@ -521,7 +527,7 @@ public class BackupHandler {
      * @param backupLocation  The location to save the backup.
      * @param format          The format of the backup (e.g., ZIP, DIRECTORY).
      */
-    private static void performBackup(MinecraftServer minecraftServer, Path backupLocation, Format format) {
+    private static void performBackup(MinecraftServer minecraftServer, Path backupLocation, Format format, Backup backup) {
         FTBBackups.LOGGER.info("Performing backup to: {}", backupLocation);
 
         try {
@@ -590,7 +596,9 @@ public class BackupHandler {
             }
 
             FTBBackups.LOGGER.debug("Generating backup preview before file operations...");
-            backupPreview.set(createPreview(minecraftServer));
+            String preview = createPreview(minecraftServer);
+            backup.setPreview(preview);
+            backupPreview.set(preview);
 
             FTBBackups.LOGGER.info("Starting backup operation with format: {}", format);
             if (format == Format.DIRECTORY) {
