@@ -442,6 +442,7 @@ public class BackupHandler {
         }, FTBBackups.backupExecutor).thenRun(() -> {
             finalizeBackup(minecraftServer, backup, setup.backupLocation, format, startTime);
             currentFuture = null;
+            FTBBackups.LOGGER.info("Backup performed successfully.");
         });
 
         FTBBackups.LOGGER.debug("Backup task scheduled on executor.");
@@ -613,7 +614,6 @@ public class BackupHandler {
                 setDirty(true);
                 FTBBackups.LOGGER.debug("Player still connected after backup, setting isDirty to true.");
             }
-            FTBBackups.LOGGER.info("Backup performed successfully.");
         } catch (Exception e) {
             handleBackupException(minecraftServer, e);
         }
@@ -1373,7 +1373,7 @@ public class BackupHandler {
      */
     private static void scheduleStatusCheck(Path backupPath, Format format, long expectedSize, long delay,
             TimeUnit unit) {
-        FTBBackups.statusMonitorLogger.debug("Scheduling status check with delay: {} {}", delay, unit);
+        // FTBBackups.statusMonitorLogger.debug("Scheduling status check with delay: {} {}", delay, unit);
         FTBBackups.statusMonitorExecutorService.schedule(() -> {
             if (isRunning()) {
                 long currentSize = getCurrentBackupSize(backupPath, format);
@@ -1395,7 +1395,7 @@ public class BackupHandler {
      * @return The current size of the backup.
      */
     private static long getCurrentBackupSize(Path backupPath, Format format) {
-        FTBBackups.LOGGER.debug("Calculating current backup size for: {}", backupPath);
+        // FTBBackups.LOGGER.debug("Calculating current backup size for: {}", backupPath);
         try {
             long size;
             if (format == Format.DIRECTORY) {
@@ -1403,7 +1403,7 @@ public class BackupHandler {
             } else {
                 size = Files.size(backupPath);
             }
-            FTBBackups.LOGGER.debug("Current backup size: {}", FileUtils.getSizeString(size));
+            // FTBBackups.LOGGER.debug("Current backup size: {}", FileUtils.getSizeString(size));
             return size;
         } catch (IOException e) {
             FTBBackups.LOGGER.warn("Failed to get current backup size", e);
