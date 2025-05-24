@@ -34,143 +34,103 @@ public class FileUtils {
     public static final double TB_D = GB_D * 1024D;
 
     public static void copy(Path outputDirectory, Path serverRoot, Iterable<Path> sourcePaths) throws IOException {
-        Path dir = Files.createDirectory(outputDirectory);
-
+        Path destDir = Files.createDirectory(outputDirectory);
         for (Path sourcePath : sourcePaths) {
-            if (!Files.isDirectory(sourcePath)) {
-                try {
-                    Path relFile = serverRoot.relativize(sourcePath);
-                    if (matchesAny(relFile, Config.cached().excluded)) {
-                        FTBBackups.LOGGER.debug("Skipping excluded file: {}", relFile);
-                        continue;
-                    }
-                    if (!Files.exists(sourcePath) || !Files.isReadable(sourcePath)) {
-                        FTBBackups.LOGGER.debug("Skipping non-existent or non-readable file: {}", sourcePath);
-                        continue;
-                    }
-                    Path destFile = dir.resolve(relFile);
-                    Files.createDirectories(destFile.getParent());
-                    Files.copy(sourcePath, destFile);
-                } catch (java.nio.file.NoSuchFileException e) {
-                    FTBBackups.LOGGER.debug("File disappeared during copy, skipping: {}", sourcePath);
-                } catch (IOException e) {
-                    FTBBackups.LOGGER.warn("Error copying file {}, skipping: {}", sourcePath, e.getMessage());
+            if (Files.isDirectory(sourcePath)) {
+                try (Stream<Path> pathStream = Files.walk(sourcePath)) {
+                    pathStream.filter(path -> !Files.isDirectory(path))
+                            .forEach(path -> copyFile(destDir, serverRoot, path));
                 }
             } else {
-                try (Stream<Path> pathStream = Files.walk(sourcePath)) {
-                    List<Path> paths = pathStream.toList();
-                    for (Path path : paths) {
-                        if (Files.isDirectory(path)) {
-                            continue;
-                        }
-                        try {
-                            Path relFile = serverRoot.relativize(path);
-                            if (matchesAny(relFile, Config.cached().excluded)) {
-                                FTBBackups.LOGGER.debug("Skipping excluded file: {}", relFile);
-                                continue;
-                            }
-                            if (!Files.exists(path) || !Files.isReadable(path)) {
-                                FTBBackups.LOGGER.debug("Skipping non-existent or non-readable file: {}", path);
-                                continue;
-                            }
-                            Path destFile = dir.resolve(relFile);
-                            Files.createDirectories(destFile.getParent());
-                            Files.copy(path, destFile);
-                        } catch (java.nio.file.NoSuchFileException e) {
-                            FTBBackups.LOGGER.debug("File disappeared during copy, skipping: {}", path);
-                        } catch (IOException e) {
-                            FTBBackups.LOGGER.warn("Error copying file {}, skipping: {}", path, e.getMessage());
-                        }
-                    }
-                }
+                copyFile(destDir, serverRoot, sourcePath);
             }
+        }
+    }
+
+    private static void copyFile(Path destDir, Path serverRoot, Path file) {
+        if (shouldSkipFile(file)) {
+            FTBBackups.LOGGER.debug("Skipping file during copy: {}", file);
+            return;
+        }
+        try {
+            Path relFile = serverRoot.relativize(file);
+            if (matchesAny(relFile, Config.cached().excluded)) {
+                FTBBackups.LOGGER.debug("Skipping excluded file: {}", relFile);
+                return;
+            }
+            Path destFile = destDir.resolve(relFile);
+            Files.createDirectories(destFile.getParent());
+            Files.copy(file, destFile);
+        } catch (java.nio.file.NoSuchFileException e) {
+            FTBBackups.LOGGER.debug("File disappeared during copy, skipping: {}", file);
+        } catch (IOException e) {
+            FTBBackups.LOGGER.warn("Error copying file {}: {}", file, e.getMessage(), e);
         }
     }
 
     public static void compress(Path zipFilePath, Path serverRoot, Iterable<Path> sourcePaths, Format format)
             throws IOException {
-        Path p = Files.createFile(zipFilePath);
-        try (OutputStream f = Files.newOutputStream(p);
-                ZipOutputStream zipOut = format == Format.ZIP ? new ZipOutputStream(f) : null;
-                TarOutputStream zstdOut = format == Format.ZSTD ? new TarOutputStream(new ZstdOutputStream(f)) : null) {
+        Path archivePath = Files.createFile(zipFilePath);
+        try (OutputStream fileOut = Files.newOutputStream(archivePath);
+                ZipOutputStream zipOut = format == Format.ZIP ? new ZipOutputStream(fileOut) : null;
+                TarOutputStream tarOut = format == Format.ZSTD ? new TarOutputStream(new ZstdOutputStream(fileOut)) : null) {
             for (Path sourcePath : sourcePaths) {
-                if (!Files.isDirectory(sourcePath)) {
-                    try {
-                        Path relFile = serverRoot.relativize(sourcePath);
-                        if (matchesAny(relFile, Config.cached().excluded)) {
-                            FTBBackups.LOGGER.debug("Skipping excluded file: {}", relFile);
-                            continue;
-                        }
-                        if (format == Format.ZIP) {
-                            packIntoZip(zipOut, serverRoot, sourcePath);
-                        } else {
-                            packIntoTar(zstdOut, serverRoot, sourcePath);
-                        }
-                    } catch (java.nio.file.NoSuchFileException e) {
-                        FTBBackups.LOGGER.debug("File disappeared during compression, skipping: {}", sourcePath);
-                    } catch (IOException e) {
-                        String errorMessage = e.getMessage();
-                        if (errorMessage != null && errorMessage.contains("duplicate entry")) {
-                            FTBBackups.LOGGER.debug("Skipped duplicate file during compression: {}", errorMessage);
-                        } else {
-                            FTBBackups.LOGGER.warn("Error compressing file, skipping: {}", errorMessage);
-                        }
+                if (Files.isDirectory(sourcePath)) {
+                    try (Stream<Path> pathStream = Files.walk(sourcePath)) {
+                        pathStream.filter(path -> !Files.isDirectory(path))
+                                .forEach(path -> compressFile(format, zipOut, tarOut, serverRoot, path));
                     }
                 } else {
-                    try (Stream<Path> pathStream = Files.walk(sourcePath)) {
-                        List<Path> paths = pathStream.toList();
-                        for (Path path : paths) {
-                            if (Files.isDirectory(path)) {
-                                continue;
-                            }
-                            try {
-                                Path relFile = serverRoot.relativize(path);
-                                if (matchesAny(relFile, Config.cached().excluded)) {
-                                    FTBBackups.LOGGER.debug("Skipping excluded file: {}", relFile);
-                                    continue;
-                                }
-                                if (format == Format.ZIP) {
-                                    packIntoZip(zipOut, serverRoot, path);
-                                } else {
-                                    packIntoTar(zstdOut, serverRoot, path);
-                                }
-                            } catch (java.nio.file.NoSuchFileException e) {
-                                FTBBackups.LOGGER.debug("File disappeared during compression, skipping: {}", path);
-                            } catch (IOException e) {
-                                String errorMessage = e.getMessage();
-                                if (errorMessage != null && errorMessage.contains("duplicate entry")) {
-                                    FTBBackups.LOGGER.debug("Skipped duplicate file during compression: {}",
-                                            errorMessage);
-                                } else {
-                                    FTBBackups.LOGGER.warn("Error compressing file, skipping: {}", errorMessage);
-                                }
-                            }
-                        }
-                    }
+                    compressFile(format, zipOut, tarOut, serverRoot, sourcePath);
                 }
             }
         }
     }
 
-    private static boolean shouldSkipPacking(Path file) {
-        if (file.getFileName().toString().equals("session.lock")) {
+    private static void compressFile(Format format, ZipOutputStream zipOut, TarOutputStream tarOut, Path serverRoot, Path file) {
+        if (shouldSkipFile(file)) {
+            FTBBackups.LOGGER.debug("Skipping file during compression: {}", file);
+            return;
+        }
+        try {
+            Path relFile = serverRoot.relativize(file);
+            if (matchesAny(relFile, Config.cached().excluded)) {
+                FTBBackups.LOGGER.debug("Skipping excluded file: {}", relFile);
+                return;
+            }
+            if (format == Format.ZIP) {
+                packIntoZip(zipOut, serverRoot, file);
+            } else if (format == Format.ZSTD) {
+                packIntoTar(tarOut, serverRoot, file);
+            }
+        } catch (java.nio.file.NoSuchFileException e) {
+            FTBBackups.LOGGER.debug("File disappeared during compression, skipping: {}", file);
+        } catch (IOException e) {
+            handleCompressionError(e, file);
+        }
+    }
+
+    private static boolean shouldSkipFile(Path file) {
+        String fileName = file.getFileName().toString();
+        if (fileName.equals("session.lock")) {
             return true;
         }
-        if (!Files.exists(file)) {
-            return true;
-        }
-        if (!Files.isReadable(file)) {
+        if (!Files.exists(file) || !Files.isReadable(file)) {
             return true;
         }
         return false;
     }
 
-    private static void packIntoZip(ZipOutputStream zos, Path rootDir, Path file) throws IOException {
-        if (shouldSkipPacking(file)) {
-            FTBBackups.LOGGER.debug("Skipping file in ZIP: {}", file);
-            return;
+    private static void handleCompressionError(IOException e, Path file) {
+        String errorMessage = e.getMessage();
+        if (errorMessage != null && errorMessage.contains("duplicate entry")) {
+            // FTBBackups.LOGGER.debug("Skipped duplicate file during compression: {}", file);
+        } else {
+            FTBBackups.LOGGER.warn("Error compressing file {}: {}", file, errorMessage, e);
         }
+    }
 
+    private static void packIntoZip(ZipOutputStream zos, Path rootDir, Path file) throws IOException {
         ZipEntry zipEntry = new ZipEntry(rootDir.relativize(file).toString());
         zos.putNextEntry(zipEntry);
         updateZipEntry(zipEntry, file);
@@ -189,11 +149,6 @@ public class FileUtils {
     }
 
     private static void packIntoTar(TarOutputStream taos, Path rootDir, Path file) throws IOException {
-        if (shouldSkipPacking(file)) {
-            FTBBackups.LOGGER.debug("Skipping file in TAR: {}", file);
-            return;
-        }
-
         TarEntry tarEntry = new TarEntry(file.toFile(), rootDir.relativize(file).toString());
         taos.putNextEntry(tarEntry);
         updateTarEntry(tarEntry, file);
@@ -282,19 +237,16 @@ public class FileUtils {
         }
     }
 
-    // Modified method to fix compilation error
     public static String getSizeString(Path path) {
         long size = getSize(path.toFile());
         return getSizeString((double) size);
     }
 
-    // Modified method to fix compilation error
     public static String getSizeString(File file) {
         long size = getSize(file);
         return getSizeString((double) size);
     }
 
-    // New method to format size as a human-readable string
     public static String getSizeString(double b) {
         if (b >= TB_D) {
             return String.format("%.1fTB", b / TB_D);
