@@ -71,42 +71,55 @@ public class FileUtils {
     public static void compress(Path zipFilePath, Path serverRoot, Iterable<Path> sourcePaths, Format format)
             throws IOException {
         Path archivePath = Files.createFile(zipFilePath);
+        boolean fileAdded = false;
         try (OutputStream fileOut = Files.newOutputStream(archivePath);
                 ZipOutputStream zipOut = format == Format.ZIP ? new ZipOutputStream(fileOut) : null;
                 TarOutputStream tarOut = format == Format.ZSTD ? new TarOutputStream(new ZstdOutputStream(fileOut)) : null) {
             for (Path sourcePath : sourcePaths) {
                 if (Files.isDirectory(sourcePath)) {
                     try (Stream<Path> pathStream = Files.walk(sourcePath)) {
-                        pathStream.filter(path -> !Files.isDirectory(path))
-                                .forEach(path -> compressFile(format, zipOut, tarOut, serverRoot, path));
+                        for (Path path : pathStream.filter(p -> !Files.isDirectory(p)).toList()) {
+                            if (compressFile(format, zipOut, tarOut, serverRoot, path)) {
+                                fileAdded = true;
+                            }
+                        }
                     }
                 } else {
-                    compressFile(format, zipOut, tarOut, serverRoot, sourcePath);
+                    if (compressFile(format, zipOut, tarOut, serverRoot, sourcePath)) {
+                        fileAdded = true;
+                    }
                 }
+            }
+            if (!fileAdded) {
+                FTBBackups.LOGGER.warn("No files were added to the backup archive: {}", zipFilePath);
+                throw new IOException("No files were compressed into the backup");
             }
         }
     }
 
-    private static void compressFile(Format format, ZipOutputStream zipOut, TarOutputStream tarOut, Path serverRoot, Path file) {
+    private static boolean compressFile(Format format, ZipOutputStream zipOut, TarOutputStream tarOut, Path serverRoot, Path file) {
         if (shouldSkipFile(file)) {
             FTBBackups.LOGGER.debug("Skipping file during compression: {}", file);
-            return;
+            return false;
         }
         try {
             Path relFile = serverRoot.relativize(file);
             if (matchesAny(relFile, Config.cached().excluded)) {
                 FTBBackups.LOGGER.debug("Skipping excluded file: {}", relFile);
-                return;
+                return false;
             }
             if (format == Format.ZIP) {
                 packIntoZip(zipOut, serverRoot, file);
             } else if (format == Format.ZSTD) {
                 packIntoTar(tarOut, serverRoot, file);
             }
+            return true;
         } catch (java.nio.file.NoSuchFileException e) {
             FTBBackups.LOGGER.debug("File disappeared during compression, skipping: {}", file);
+            return false;
         } catch (IOException e) {
             handleCompressionError(e, file);
+            return false;
         }
     }
 
