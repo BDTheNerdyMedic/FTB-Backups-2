@@ -461,17 +461,11 @@ public class BackupHandler {
             return true;
         }
 
-        if (backups.get().getBackups().isEmpty()) {
-            FTBBackups.LOGGER.info("No backups found, proceeding with backup.");
-            return false;
-        }
-
-        if (Config.cached().only_if_players_been_online && !isDirty()) {
+        // Skip if there are backups and no player activity since the last one (if configured)
+        if (!backups.get().getBackups().isEmpty() && Config.cached().only_if_players_been_online && !isDirty()) {
             FTBBackups.LOGGER.info("Skipping backup: no players have been online since last backup.");
             return true;
         }
-
-        FTBBackups.LOGGER.info("World folder located at: {}", worldFolder);
 
         if (!canCreateBackup()) {
             if (!failReason.isEmpty()) {
@@ -594,10 +588,20 @@ public class BackupHandler {
             try {
                 if (format == Format.DIRECTORY) {
                     FileUtils.copy(backupPath, serverRoot, backupPaths);
-                    FTBBackups.LOGGER.debug("Directory backup completed.");
+                    if (!Files.exists(backupPath)) {
+                        FTBBackups.LOGGER.error("Backup directory was not created: {}", backupPath);
+                        throw new IOException("Backup directory was not created");
+                    } else {
+                        FTBBackups.LOGGER.debug("Directory backup completed.");
+                    }
                 } else {
                     FileUtils.compress(backupPath, serverRoot, backupPaths, format);
-                    FTBBackups.LOGGER.debug("Compressed backup completed.");
+                    if (!Files.exists(backupPath)) {
+                        FTBBackups.LOGGER.error("Backup file was not created: {}", backupPath);
+                        throw new IOException("Backup file was not created");
+                    } else {
+                        FTBBackups.LOGGER.debug("Compressed backup completed.");
+                    }
                 }
             } catch (UncheckedIOException uioe) {
                 if (uioe.getCause() instanceof NoSuchFileException) {
@@ -640,15 +644,25 @@ public class BackupHandler {
             return;
         }
 
-        String sha1;
+        long backupSize = 0;
+        String sha1 = "";
         float ratio = 1;
-        long backupSize = FileUtils.getSize(backupLocation.toFile());
-        if (format != Format.DIRECTORY) {
-            sha1 = FileUtils.getFileSha1(backupLocation);
-            ratio = (float) backupSize / (float) FileUtils.getFolderSize(worldFolder);
-            FTBBackups.LOGGER.debug("Calculated compression ratio: {}", ratio);
+
+        if (Files.exists(backupLocation)) {
+            backupSize = FileUtils.getSize(backupLocation.toFile());
+            if (format != Format.DIRECTORY) {
+                sha1 = FileUtils.getFileSha1(backupLocation);
+                ratio = (float) backupSize / (float) FileUtils.getFolderSize(worldFolder);
+                FTBBackups.LOGGER.debug("Calculated compression ratio: {}", ratio);
+            } else {
+                sha1 = FileUtils.getDirectorySha1(backupLocation);
+            }
         } else {
-            sha1 = FileUtils.getDirectorySha1(backupLocation);
+            FTBBackups.LOGGER.error("Backup file does not exist: {}", backupLocation);
+            backupFailed.set(true);
+            backupRunning.set(false);
+            alertPlayers(minecraftServer, Component.translatable(FTBBackups.MOD_ID + ".backup.failed"));
+            return;
         }
 
         FTBBackups.LOGGER.debug("Backup size: {}, World size: {}", FileUtils.getSizeString(backupSize),

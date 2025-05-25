@@ -313,7 +313,6 @@ public class FTBBackups {
                 LOGGER.info("Cron-triggered automatic backup started.");
                 try {
                     BackupHandler.createBackup(FTBBackups.minecraftServer);
-                    LOGGER.info("Backup job completed successfully.");
                 } catch (Exception e) {
                     LOGGER.error("Error during backup job execution", e);
                 }
