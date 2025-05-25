@@ -51,6 +51,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -795,51 +796,17 @@ public class BackupHandler {
             FTBBackups.LOGGER.debug("No backups available.");
             return null;
         }
-        Backup currentNewest = null;
-        for (Backup backup : backups.get().getBackups()) {
-            if (!backup.isComplete())
-                continue;
-            if (currentNewest == null)
-                currentNewest = backup;
-            if (backup.getCreateTime() > currentNewest.getCreateTime()) {
-                currentNewest = backup;
-            }
-        }
-        if (currentNewest != null) {
-            FTBBackups.LOGGER.debug("Latest backup found: {}", currentNewest.getBackupLocation());
+        Optional<Backup> latestBackup = backups.get().getBackups().stream()
+                .filter(Backup::isComplete)
+                .max(Comparator.comparingLong(Backup::getCreateTime));
+        if (latestBackup.isPresent()) {
+            Backup backup = latestBackup.get();
+            FTBBackups.LOGGER.debug("Latest backup found: {}", backup.getBackupLocation());
+            return backup;
         } else {
             FTBBackups.LOGGER.debug("No complete backups found.");
-        }
-        return currentNewest;
-    }
-
-    /**
-     * Retrieves the oldest unprotected backup.
-     *
-     * @return The oldest unprotected backup, or null if none exist.
-     */
-    public static Backup getOldestBackup() {
-        FTBBackups.LOGGER.debug("Retrieving oldest unprotected backup...");
-        if (backups.get().isEmpty()) {
-            FTBBackups.LOGGER.debug("No backups available.");
             return null;
         }
-        Backup currentOldest = null;
-        for (Backup backup : backups.get().getBackups()) {
-            if (backup.isProtected())
-                continue;
-            if (currentOldest == null)
-                currentOldest = backup;
-            if (backup.getCreateTime() < currentOldest.getCreateTime()) {
-                currentOldest = backup;
-            }
-        }
-        if (currentOldest != null) {
-            FTBBackups.LOGGER.debug("Oldest backup found: {}", currentOldest.getBackupLocation());
-        } else {
-            FTBBackups.LOGGER.debug("No unprotected backups found.");
-        }
-        return currentOldest;
     }
 
     /**
@@ -864,6 +831,17 @@ public class BackupHandler {
             if (backups == null) {
                 FTBBackups.LOGGER.debug("Backups reference is null, skipping cleanup.");
                 return;
+            }
+
+            // Remove incomplete backups if configured
+            if (Config.cached().remove_incomplete_backups) {
+                List<Backup> incompleteBackups = backups.get().getBackups().stream()
+                        .filter(backup -> !backup.isComplete())
+                        .collect(Collectors.toList());
+                for (Backup backup : incompleteBackups) {
+                    FTBBackups.LOGGER.info("Removing incomplete backup: {}", backup.getBackupLocation());
+                    deleteBackup(backup);
+                }
             }
 
             try {
@@ -911,41 +889,34 @@ public class BackupHandler {
      */
     private static void cleanMax() {
         FTBBackups.LOGGER.debug("Cleaning backups with MAX_BACKUPS retention mode...");
+        List<Backup> completeBackups = backups.get().getBackups().stream()
+                .filter(Backup::isComplete)
+                .filter(backup -> !backup.isProtected())
+                .sorted(Comparator.comparingLong(Backup::getCreateTime))
+                .collect(Collectors.toList());
+
         int backupsNeedRemoving = 0;
-        if (backups.get().unprotectedSize() > Config.cached().max_backups) {
+        if (completeBackups.size() > Config.cached().max_backups) {
             FTBBackups.LOGGER.info("More backups than {} found, removing oldest backups.", Config.cached().max_backups);
-            backupsNeedRemoving = (backups.get().unprotectedSize() - Config.cached().max_backups);
+            backupsNeedRemoving = completeBackups.size() - Config.cached().max_backups;
         } else if (isSpaceConstrained && Config.cached().free_space_if_needed) {
             FTBBackups.LOGGER.info("Insufficient space, removing oldest backup to free space.");
             isSpaceConstrained = false;
             backupsNeedRemoving = 1;
         }
-        if (backupsNeedRemoving <= 0 || getOldestBackup() == null) {
+
+        if (backupsNeedRemoving <= 0 || completeBackups.isEmpty()) {
             FTBBackups.LOGGER.debug("No backups need removing.");
             return;
         }
 
-        for (int i = 0; i < backupsNeedRemoving; i++) {
-            Backup incomplete = backups.get().getBackups().stream()
-                    .filter(e -> !e.isComplete())
-                    .findAny()
-                    .orElse(null);
-
-            if (incomplete != null) {
-                FTBBackups.LOGGER.info("Removing incomplete backup: {}", incomplete.getBackupLocation());
-                deleteBackup(incomplete);
-                continue;
-            }
-
-            Backup oldest = getOldestBackup();
-            if (oldest != null) {
-                FTBBackups.LOGGER.info("Removing oldest backup: {}", oldest.getBackupLocation());
-                deleteBackup(oldest);
-            } else {
-                FTBBackups.LOGGER.debug("No more backups to remove.");
-                break;
-            }
+        // Remove the oldest backups directly from the sorted list
+        for (int i = 0; i < backupsNeedRemoving && i < completeBackups.size(); i++) {
+            Backup backupToRemove = completeBackups.get(i);
+            FTBBackups.LOGGER.info("Removing oldest backup: {}", backupToRemove.getBackupLocation());
+            deleteBackup(backupToRemove);
         }
+
         FTBBackups.LOGGER.debug("MAX_BACKUPS cleanup completed.");
     }
 
@@ -954,9 +925,11 @@ public class BackupHandler {
      */
     private static void cleanTiered() {
         FTBBackups.LOGGER.debug("Cleaning backups with TIERED retention mode...");
-        List<Backup> backupsList = new ArrayList<>(backups.get().getBackups());
-        backupsList.removeIf(Backup::isProtected);
-        backupsList.sort(Comparator.comparingLong(Backup::getCreateTime).reversed());
+        List<Backup> backupsList = backups.get().getBackups().stream()
+                .filter(Backup::isComplete)
+                .filter(backup -> !backup.isProtected())
+                .sorted(Comparator.comparingLong(Backup::getCreateTime).reversed())
+                .collect(Collectors.toList());
 
         if (backupsList.size() <= Config.cached().keep_latest) {
             FTBBackups.LOGGER.debug("No need to remove backups; within keep_latest limit.");
@@ -967,10 +940,8 @@ public class BackupHandler {
         if (Config.cached().keep_latest > 0) {
             int kept = 0;
             for (Backup backup : backupsList) {
-                if (backup.isComplete()) {
-                    backupsToKeep.put(backup, "Latest");
-                    kept++;
-                }
+                backupsToKeep.put(backup, "Latest");
+                kept++;
                 if (kept >= Config.cached().keep_latest) {
                     break;
                 }
