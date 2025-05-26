@@ -18,6 +18,7 @@ import org.quartz.*;
 import org.quartz.impl.StdSchedulerFactory;
 
 import java.nio.file.Path;
+import java.text.ParseException;
 import java.util.Properties;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -30,9 +31,9 @@ import java.util.concurrent.TimeUnit;
 public class FTBBackups {
     public static final String MOD_ID = "ftbbackups2";
     public static final Logger LOGGER = LogManager.getLogger(FTBBackups.class);
-    private static final Logger configWatcherLogger = LogManager.getLogger("FTBBackups.ConfigWatcher");
-    private static final Logger backupCleanerLogger = LogManager.getLogger("FTBBackups.BackupCleaner");
-    private static final Logger backupExecutorLogger = LogManager.getLogger("FTBBackups.BackupExecutor");
+    public static final Logger configWatcherLogger = LogManager.getLogger("FTBBackups.ConfigWatcher");
+    public static final Logger backupCleanerLogger = LogManager.getLogger("FTBBackups.BackupCleaner");
+    public static final Logger backupExecutorLogger = LogManager.getLogger("FTBBackups.BackupExecutor");
     public static final Logger statusMonitorLogger = LogManager.getLogger("FTBBackups.StatusMonitor");
     public static Path configFile = Platform.getConfigFolder().resolve(MOD_ID + ".json");
 
@@ -80,7 +81,7 @@ public class FTBBackups {
             LOGGER.error("Invalid backup_cron expression: {}. Restoring default value: '0 */30 * * * ?'.",
                     Config.cached().backup_cron);
             Config.cached().backup_cron = "0 */30 * * * ?";
-            Config.saveConfig();
+            Config.saveConfigWithPause();
         }
 
         try {
@@ -124,7 +125,7 @@ public class FTBBackups {
      * @param logger    The logger to configure.
      * @param levelName The desired logging level (e.g., "DEBUG", "INFO").
      */
-    private static void setLoggerLevel(Logger logger, String levelName) {
+    public static void setLoggerLevel(Logger logger, String levelName) {
         try {
             Level level = Level.toLevel(levelName);
             LoggerContext ctx = (LoggerContext) LogManager.getContext(false);
@@ -136,6 +137,25 @@ public class FTBBackups {
         } catch (IllegalArgumentException e) {
             LOGGER.warn("Invalid logging level: {}. Defaulting to INFO for logger: {}", levelName, logger.getName());
             setLoggerLevel(logger, "INFO");
+        }
+    }
+
+    public static void updateBackupSchedule(String newCron) throws SchedulerException {
+        if (scheduler == null || !scheduler.isStarted()) {
+            LOGGER.warn("Scheduler is not running, cannot update backup schedule.");
+            return;
+        }
+        TriggerKey triggerKey = TriggerKey.triggerKey(MOD_ID);
+        try {
+            CronTrigger newTrigger = TriggerBuilder.newTrigger()
+                    .withIdentity(MOD_ID)
+                    .withSchedule(CronScheduleBuilder.cronSchedule(newCron))
+                    .build();
+            scheduler.rescheduleJob(triggerKey, newTrigger);
+            LOGGER.info("Backup schedule updated to new cron: {}", newCron);
+        } catch (ParseException e) {
+            LOGGER.error("Failed to parse cron expression: {}", newCron, e);
+            throw new SchedulerException("Invalid cron expression: " + newCron, e);
         }
     }
 

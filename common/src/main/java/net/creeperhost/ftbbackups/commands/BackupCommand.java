@@ -5,22 +5,83 @@ import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.suggestion.SuggestionProvider;
 import net.creeperhost.ftbbackups.BackupHandler;
+import net.creeperhost.ftbbackups.FTBBackups;
 import net.creeperhost.ftbbackups.config.Config;
-import net.minecraft.client.server.IntegratedServer;
+import net.creeperhost.ftbbackups.config.ConfigData;
+import net.creeperhost.ftbbackups.config.Format;
+import net.creeperhost.ftbbackups.config.RetentionMode;
+import net.creeperhost.ftbbackups.data.Backup;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
+import org.quartz.SchedulerException;
+import org.quartz.TriggerKey;
 
-import java.util.Locale;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.*;
+import java.util.function.BiConsumer;
+import java.util.function.Function;
 
 public class BackupCommand {
     public static long lastManualBackupTime = 0;
 
     public static final SuggestionProvider<CommandSourceStack> SUGGESTIONS = (commandContext, suggestionsBuilder) -> {
-        String[] strings = new String[]{"start", "snapshot"};
+        String[] strings = new String[]{"start", "snapshot", "status", "config"};
         return SharedSuggestionProvider.suggest(strings, suggestionsBuilder);
+    };
+
+    private static final Map<String, ConfigOption<?>> CONFIG_OPTIONS = new HashMap<>();
+
+    static {
+        CONFIG_OPTIONS.put("enabled", new ConfigOption<>("enabled", boolean.class, config -> config.enabled, (config, value) -> config.enabled = Boolean.parseBoolean(value)));
+        CONFIG_OPTIONS.put("command_permission_level", new ConfigOption<>("command_permission_level", int.class, config -> config.command_permission_level, (config, value) -> config.command_permission_level = Integer.parseInt(value)));
+        CONFIG_OPTIONS.put("notify_op_only", new ConfigOption<>("notify_op_only", boolean.class, config -> config.notify_op_only, (config, value) -> config.notify_op_only = Boolean.parseBoolean(value)));
+        CONFIG_OPTIONS.put("do_not_notify", new ConfigOption<>("do_not_notify", boolean.class, config -> config.do_not_notify, (config, value) -> config.do_not_notify = Boolean.parseBoolean(value)));
+        CONFIG_OPTIONS.put("display_file_size", new ConfigOption<>("display_file_size", boolean.class, config -> config.display_file_size, (config, value) -> config.display_file_size = Boolean.parseBoolean(value)));
+        CONFIG_OPTIONS.put("enable_status_monitoring", new ConfigOption<>("enable_status_monitoring", boolean.class, config -> config.enable_status_monitoring, (config, value) -> config.enable_status_monitoring = Boolean.parseBoolean(value)));
+        CONFIG_OPTIONS.put("logging_level", new ConfigOption<>("logging_level", String.class, config -> config.logging_level, (config, value) -> config.logging_level = value));
+        CONFIG_OPTIONS.put("retention_mode", new ConfigOption<>("retention_mode", RetentionMode.class, config -> config.retention_mode, (config, value) -> config.retention_mode = RetentionMode.valueOf(value.toUpperCase())));
+        CONFIG_OPTIONS.put("max_backups", new ConfigOption<>("max_backups", int.class, config -> config.max_backups, (config, value) -> config.max_backups = Integer.parseInt(value)));
+        CONFIG_OPTIONS.put("keep_latest", new ConfigOption<>("keep_latest", int.class, config -> config.keep_latest, (config, value) -> config.keep_latest = Integer.parseInt(value)));
+        CONFIG_OPTIONS.put("keep_hourly", new ConfigOption<>("keep_hourly", int.class, config -> config.keep_hourly, (config, value) -> config.keep_hourly = Integer.parseInt(value)));
+        CONFIG_OPTIONS.put("keep_daily", new ConfigOption<>("keep_daily", int.class, config -> config.keep_daily, (config, value) -> config.keep_daily = Integer.parseInt(value)));
+        CONFIG_OPTIONS.put("keep_weekly", new ConfigOption<>("keep_weekly", int.class, config -> config.keep_weekly, (config, value) -> config.keep_weekly = Integer.parseInt(value)));
+        CONFIG_OPTIONS.put("keep_monthly", new ConfigOption<>("keep_monthly", int.class, config -> config.keep_monthly, (config, value) -> config.keep_monthly = Integer.parseInt(value)));
+        CONFIG_OPTIONS.put("backup_cron", new ConfigOption<>("backup_cron", String.class, config -> config.backup_cron, (config, value) -> config.backup_cron = value));
+        CONFIG_OPTIONS.put("manual_backups_time", new ConfigOption<>("manual_backups_time", int.class, config -> config.manual_backups_time, (config, value) -> config.manual_backups_time = Integer.parseInt(value)));
+        CONFIG_OPTIONS.put("only_if_players_been_online", new ConfigOption<>("only_if_players_been_online", boolean.class, config -> config.only_if_players_been_online, (config, value) -> config.only_if_players_been_online = Boolean.parseBoolean(value)));
+        CONFIG_OPTIONS.put("additional_files", new ConfigOption<>("additional_files", List.class, config -> config.additional_files, (config, value) -> config.additional_files = Arrays.asList(value.split(","))));
+        CONFIG_OPTIONS.put("excluded", new ConfigOption<>("excluded", List.class, config -> config.excluded, (config, value) -> config.excluded = Arrays.asList(value.split(","))));
+        CONFIG_OPTIONS.put("backup_location", new ConfigOption<>("backup_location", String.class, config -> config.backup_location, (config, value) -> config.backup_location = value));
+        CONFIG_OPTIONS.put("backup_format", new ConfigOption<>("backup_format", Format.class, config -> config.backup_format, (config, value) -> config.backup_format = Format.valueOf(value.toUpperCase())));
+        CONFIG_OPTIONS.put("minimum_free_space", new ConfigOption<>("minimum_free_space", long.class, config -> config.minimum_free_space, (config, value) -> config.minimum_free_space = Long.parseLong(value)));
+        CONFIG_OPTIONS.put("free_space_if_needed", new ConfigOption<>("free_space_if_needed", boolean.class, config -> config.free_space_if_needed, (config, value) -> config.free_space_if_needed = Boolean.parseBoolean(value)));
+        CONFIG_OPTIONS.put("remove_incomplete_backups", new ConfigOption<>("remove_incomplete_backups", boolean.class, config -> config.remove_incomplete_backups, (config, value) -> config.remove_incomplete_backups = Boolean.parseBoolean(value)));
+        CONFIG_OPTIONS.put("enable_preview", new ConfigOption<>("enable_preview", boolean.class, config -> config.enable_preview, (config, value) -> config.enable_preview = Boolean.parseBoolean(value)));
+        CONFIG_OPTIONS.put("preview_dimension", new ConfigOption<>("preview_dimension", String.class, config -> config.preview_dimension, (config, value) -> config.preview_dimension = value));
+        CONFIG_OPTIONS.put("preview_dimensions_list", new ConfigOption<>("preview_dimensions_list", List.class, config -> config.preview_dimensions_list, (config, value) -> config.preview_dimensions_list = Arrays.asList(value.split(","))));
+    }
+
+    public static final SuggestionProvider<CommandSourceStack> CONFIG_VALUE_SUGGESTIONS = (context, builder) -> {
+        String option = context.getArgument("option", String.class);
+        ConfigOption<?> configOption = CONFIG_OPTIONS.get(option);
+        if (configOption != null) {
+            if (configOption.type == boolean.class) {
+                return SharedSuggestionProvider.suggest(new String[]{"true", "false"}, builder);
+            } else if (option.equals("retention_mode")) {
+                return SharedSuggestionProvider.suggest(new String[]{"MAX_BACKUPS", "TIERED"}, builder);
+            } else if (option.equals("logging_level")) {
+                return SharedSuggestionProvider.suggest(new String[]{"DEBUG", "INFO", "WARN", "ERROR"}, builder);
+            } else if (option.equals("backup_format")) {
+                return SharedSuggestionProvider.suggest(Arrays.stream(Format.values()).map(Enum::name), builder);
+            }
+        }
+        return SharedSuggestionProvider.suggest(new String[0], builder);
     };
 
     public static LiteralArgumentBuilder<CommandSourceStack> register() {
@@ -31,11 +92,32 @@ public class BackupCommand {
                         .then(Commands.argument("name", StringArgumentType.string())
                                 .executes(cs -> execute(cs, StringArgumentType.getString(cs, "command"), StringArgumentType.getString(cs, "name")))
                         )
+                )
+                .then(Commands.literal("status")
+                        .executes(BackupCommand::status))
+                .then(Commands.literal("config")
+                        .then(Commands.literal("get")
+                                .then(Commands.argument("option", StringArgumentType.word())
+                                        .suggests((context, builder) -> SharedSuggestionProvider.suggest(CONFIG_OPTIONS.keySet(), builder))
+                                        .executes(context -> getConfig(context, StringArgumentType.getString(context, "option")))
+                                )
+                        )
+                        .then(Commands.literal("set")
+                                .then(Commands.argument("option", StringArgumentType.word())
+                                        .suggests((context, builder) -> SharedSuggestionProvider.suggest(CONFIG_OPTIONS.keySet(), builder))
+                                        .then(Commands.argument("value", StringArgumentType.greedyString())
+                                                .suggests(CONFIG_VALUE_SUGGESTIONS)
+                                                .executes(context -> setConfig(context, StringArgumentType.getString(context, "option"), StringArgumentType.getString(context, "value")))
+                                        )
+                                )
+                        )
                 );
     }
 
     public static int hasPerm(MinecraftServer server) {
-        if (server.isDedicatedServer() || server instanceof IntegratedServer integratedServer && integratedServer.isPublished()) return Config.cached().command_permission_level;
+        if (server.isDedicatedServer() || (server.isSingleplayer() && server.isPublished())) {
+            return Config.cached().command_permission_level;
+        }
         return 0;
     }
 
@@ -43,26 +125,237 @@ public class BackupCommand {
         boolean isProtected = command.toLowerCase(Locale.ROOT).equals("snapshot");
         int manualBackupsTime = Config.cached().manual_backups_time;
 
-        // Check cooldown if it exists
         if (manualBackupsTime > 0) {
             long configTimeFromMinutes = ((long) manualBackupsTime) * 60_000;
             long lastBackupWithConfig = lastManualBackupTime + configTimeFromMinutes;
             if (System.currentTimeMillis() <= lastBackupWithConfig) {
                 cs.getSource().sendFailure(
-                        Component.literal("Unable to create backup, last manual backup was taken less than "
-                                + manualBackupsTime + " minutes ago"));
+                        Component.literal("Unable to create backup, last manual backup was taken less than " + manualBackupsTime + " minutes ago"));
                 return 0;
             }
         }
 
-        // Update timestamp if cooldown applies
         if (manualBackupsTime > 0) {
             lastManualBackupTime = System.currentTimeMillis();
         }
 
-        // Perform the backup
         BackupHandler.setDirty(true);
         BackupHandler.createBackup(cs.getSource().getServer(), isProtected, name);
         return 0;
+    }
+
+    private static int status(CommandContext<CommandSourceStack> context) {
+        StringBuilder messageBuilder = new StringBuilder();
+        ConfigData config = Config.cached();
+
+        // Display whether backups are enabled or disabled
+        if (config.enabled) {
+            messageBuilder.append("Backups Enabled\n");
+        } else {
+            messageBuilder.append("Backups Disabled\n");
+        }
+
+        // Show last backup time if available
+        Backup latestBackup = BackupHandler.getLatestBackup();
+        if (latestBackup != null) {
+            long createTime = latestBackup.getCreateTime();
+            Instant instant = Instant.ofEpochMilli(createTime);
+            ZonedDateTime zdt = ZonedDateTime.ofInstant(instant, ZoneId.systemDefault());
+            String formattedTime = zdt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+            long timeSince = System.currentTimeMillis() - createTime;
+            String timeSinceStr = formatDuration(timeSince);
+            messageBuilder.append("Last backup: ").append(formattedTime).append(" (").append(timeSinceStr)
+                    .append(" ago)\n");
+        } else {
+            messageBuilder.append("No backups available\n");
+        }
+
+        // Show next backup time only if backups are enabled
+        if (config.enabled) {
+            try {
+                Date nextFireTime = FTBBackups.scheduler.getTrigger(TriggerKey.triggerKey(FTBBackups.MOD_ID))
+                        .getNextFireTime();
+                if (nextFireTime != null) {
+                    long timeUntil = nextFireTime.getTime() - System.currentTimeMillis();
+                    String timeUntilStr = timeUntil > 0 ? "in " + formatDuration(timeUntil) : "now";
+                    messageBuilder.append("Next backup: ").append(timeUntilStr).append("\n");
+                } else {
+                    messageBuilder.append("No scheduled backups\n");
+                }
+            } catch (SchedulerException e) {
+                messageBuilder.append("Error retrieving next backup time\n");
+            }
+            // Show dirty status if only_if_players_been_online is true
+            if (config.only_if_players_been_online) {
+                boolean isDirty = BackupHandler.isDirty();
+                messageBuilder.append("Server marked for backup: ").append(isDirty).append("\n");
+            }
+        }
+
+        context.getSource().sendSuccess(() -> Component.literal(messageBuilder.toString()), false);
+        return 0;
+    }
+
+    private static String formatDuration(long millis) {
+        if (millis <= 0) return "now";
+        long seconds = millis / 1000;
+        long minutes = seconds / 60;
+        long hours = minutes / 60;
+        long days = hours / 24;
+        if (days > 0) return days + " days";
+        else if (hours > 0) return hours + " hours";
+        else if (minutes > 0) return minutes + " minutes";
+        else return seconds + " seconds";
+    }
+
+    private static int getConfig(CommandContext<CommandSourceStack> context, String optionName) {
+        ConfigOption<?> option = CONFIG_OPTIONS.get(optionName);
+        if (option == null) {
+            context.getSource().sendFailure(Component.literal("Unknown config option: " + optionName));
+            return 0;
+        }
+        ConfigData config = Config.cached();
+        Object value = option.getter.apply(config);
+        final String valueStr;
+        if (option.type == List.class) {
+            @SuppressWarnings("unchecked")
+            List<String> listValue = (List<String>) value;
+            valueStr = String.join(", ", listValue);
+        } else {
+            valueStr = value.toString();
+        }
+        context.getSource().sendSuccess(() -> Component.literal(option.name + ": " + valueStr), false);
+        return 1;
+    }
+
+    private static int setConfig(CommandContext<CommandSourceStack> context, String optionName, String valueStr) {
+        ConfigOption<?> option = CONFIG_OPTIONS.get(optionName);
+        if (option == null) {
+            context.getSource().sendFailure(Component.literal("Unknown config option: " + optionName));
+            return 0;
+        }
+
+        ConfigData config = Config.cached();
+        try {
+            if (option.type == List.class) {
+                // Get the current list
+                @SuppressWarnings("unchecked")
+                List<String> currentList = new ArrayList<>((List<String>) option.getter.apply(config));
+
+                // Split the input into action and value parts
+                String[] parts = valueStr.split(" ", 2);
+                String action = parts[0].toLowerCase();
+                String value = parts.length > 1 ? parts[1] : "";
+
+                if (action.equals("add")) {
+                    if (value.isEmpty()) {
+                        context.getSource().sendFailure(Component.literal("No value provided to add."));
+                        return 0;
+                    }
+                    currentList.add(value.trim());
+                    option.setter.accept(config, String.join(",", currentList));
+                    context.getSource().sendSuccess(() -> Component.literal("Added " + value + " to " + optionName),
+                            false);
+                } else if (action.equals("remove")) {
+                    if (value.isEmpty()) {
+                        context.getSource().sendFailure(Component.literal("No value provided to remove."));
+                        return 0;
+                    }
+                    if (!currentList.remove(value.trim())) {
+                        context.getSource()
+                                .sendFailure(Component.literal("Value not found in " + optionName + ": " + value));
+                        return 0;
+                    }
+                    option.setter.accept(config, String.join(",", currentList));
+                    context.getSource().sendSuccess(() -> Component.literal("Removed " + value + " from " + optionName),
+                            false);
+                } else {
+                    // Treat the entire valueStr as a comma-separated list
+                    String[] items = valueStr.split(",");
+                    List<String> newList = new ArrayList<>();
+                    for (String item : items) {
+                        String trimmed = item.trim();
+                        if (!trimmed.isEmpty()) {
+                            newList.add(trimmed);
+                        }
+                    }
+                    option.setter.accept(config, String.join(",", newList));
+                    context.getSource().sendSuccess(
+                            () -> Component.literal("Set " + optionName + " to " + String.join(", ", newList)), false);
+                }
+            } else {
+                // Handle non-list options as before
+                if (option.type == boolean.class) {
+                    String lowerValue = valueStr.toLowerCase();
+                    if (!lowerValue.equals("true") && !lowerValue.equals("false")) {
+                        context.getSource().sendFailure(
+                                Component.literal("Invalid boolean value: " + valueStr + ". Use 'true' or 'false'."));
+                        return 0;
+                    }
+                    option.setter.accept(config, lowerValue);
+                } else if (option.type == int.class) {
+                    int intValue = Integer.parseInt(valueStr);
+                    option.setter.accept(config, String.valueOf(intValue));
+                } else if (option.type == long.class) {
+                    long longValue = Long.parseLong(valueStr);
+                    option.setter.accept(config, String.valueOf(longValue));
+                } else if (option.type == String.class) {
+                    option.setter.accept(config, valueStr);
+                } else if (option.type == RetentionMode.class) {
+                    RetentionMode mode = RetentionMode.valueOf(valueStr.toUpperCase());
+                    option.setter.accept(config, mode.name());
+                } else if (option.type == Format.class) {
+                    Format format = Format.valueOf(valueStr.toUpperCase());
+                    option.setter.accept(config, format.name());
+                } else {
+                    context.getSource().sendFailure(Component.literal("Unsupported config type for " + optionName));
+                    return 0;
+                }
+                context.getSource().sendSuccess(() -> Component.literal("Set " + optionName + " to " + valueStr),
+                        false);
+            }
+
+            // Save the updated configuration
+            Config.update(config);
+            Config.saveConfigWithPause();
+
+            // Handle special cases
+            if (optionName.equals("backup_cron")) {
+                FTBBackups.updateBackupSchedule(valueStr);
+            }
+            if (optionName.equals("logging_level")) {
+                String newLevel = config.logging_level;
+                FTBBackups.setLoggerLevel(FTBBackups.LOGGER, newLevel);
+                FTBBackups.setLoggerLevel(FTBBackups.configWatcherLogger, newLevel);
+                FTBBackups.setLoggerLevel(FTBBackups.backupCleanerLogger, newLevel);
+                FTBBackups.setLoggerLevel(FTBBackups.backupExecutorLogger, newLevel);
+                FTBBackups.setLoggerLevel(FTBBackups.statusMonitorLogger, newLevel);
+            }
+        } catch (NumberFormatException e) {
+            context.getSource()
+                    .sendFailure(Component.literal("Invalid number format for " + optionName + ": " + valueStr));
+            return 0;
+        } catch (IllegalArgumentException e) {
+            context.getSource().sendFailure(Component.literal("Invalid value for " + optionName + ": " + valueStr));
+            return 0;
+        } catch (Exception e) {
+            context.getSource().sendFailure(Component.literal("Failed to set " + optionName + ": " + e.getMessage()));
+            return 0;
+        }
+        return 1;
+    }
+
+    private static class ConfigOption<T> {
+        final String name;
+        final Class<T> type;
+        final Function<ConfigData, T> getter;
+        final BiConsumer<ConfigData, String> setter;
+
+        ConfigOption(String name, Class<T> type, Function<ConfigData, T> getter, BiConsumer<ConfigData, String> setter) {
+            this.name = name;
+            this.type = type;
+            this.getter = getter;
+            this.setter = setter;
+        }
     }
 }
