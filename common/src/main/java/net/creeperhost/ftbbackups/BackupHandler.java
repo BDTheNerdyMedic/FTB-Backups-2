@@ -448,6 +448,7 @@ public class BackupHandler {
                 FTBBackups.LOGGER.error("Backup failed.");
             }
             currentFuture = null;
+            clean();
         });
     }
 
@@ -550,7 +551,6 @@ public class BackupHandler {
             FTBBackups.LOGGER.debug("Executing backup operation.");
             try {
                 executeBackupOperation(backupLocation, format, backupPaths);
-                FTBBackups.LOGGER.info("Backup operation completed successfully for: {}", backupLocation);
             } catch (IOException e) {
                 FTBBackups.LOGGER.error("Failed to create backup file at {}: {}", backupLocation, e.getMessage(), e);
                 throw e;
@@ -786,7 +786,7 @@ public class BackupHandler {
      * @param backup The backup to remove.
      */
     public static void removeBackup(Backup backup) {
-        FTBBackups.LOGGER.debug("Removing backup: {}", backup.getBackupLocation());
+        FTBBackups.LOGGER.debug("Removing backup from list: {}", backup.getBackupLocation());
         backups.getAndUpdate(backups1 -> {
             if (backups1.contains(backup)) {
                 backups1.remove(backup);
@@ -835,7 +835,7 @@ public class BackupHandler {
             FTBBackups.LOGGER.debug("Minecraft server not available, skipping cleanup.");
             return;
         }
-
+    
         synchronized (BACKUP_LOCK) {
             if (FTBBackups.isShutdown) {
                 FTBBackups.LOGGER.debug("Mod is shutting down, skipping cleanup.");
@@ -845,11 +845,14 @@ public class BackupHandler {
                 FTBBackups.LOGGER.debug("Backup is running, skipping cleanup.");
                 return;
             }
-            if (backups == null) {
-                FTBBackups.LOGGER.debug("Backups reference is null, skipping cleanup.");
+    
+            // Refresh the backups list from backups.json
+            loadJson();
+            if (backups == null || backups.get() == null) {
+                FTBBackups.LOGGER.debug("Backups reference is null after loading, skipping cleanup.");
                 return;
             }
-
+    
             // Remove incomplete backups if configured
             if (Config.cached().remove_incomplete_backups) {
                 List<Backup> incompleteBackups = backups.get().getBackups().stream()
@@ -860,28 +863,30 @@ public class BackupHandler {
                     deleteBackup(backup);
                 }
             }
-
+    
+            // Check for unmanaged files
             try {
                 Set<String> managedFileNames = backups.get().getBackups().stream()
                         .map(backup -> Path.of(backup.getBackupLocation()).getFileName().toString())
                         .collect(Collectors.toSet());
-
+    
                 List<String> directoryFileNames = Files.list(backupFolderPath)
                         .filter(Files::isRegularFile)
                         .map(path -> path.getFileName().toString())
                         .collect(Collectors.toList());
-
+    
                 List<String> unmanagedFiles = directoryFileNames.stream()
                         .filter(fileName -> !managedFileNames.contains(fileName) && !"backups.json".equals(fileName))
                         .collect(Collectors.toList());
-
+    
                 if (!unmanagedFiles.isEmpty()) {
                     FTBBackups.LOGGER.info("Unmanaged backup files found: {}", unmanagedFiles);
                 }
             } catch (IOException e) {
                 FTBBackups.LOGGER.error("Error while checking for unmanaged backup files", e);
             }
-
+    
+            // Apply retention policies
             switch (Config.cached().retention_mode) {
                 case MAX_BACKUPS:
                     FTBBackups.LOGGER.debug("Retention mode: MAX_BACKUPS");
@@ -895,7 +900,6 @@ public class BackupHandler {
                     FTBBackups.LOGGER.error("Unknown retention mode: {}", Config.cached().retention_mode);
                     break;
             }
-
             verifyOldBackups();
             FTBBackups.LOGGER.debug("Backup cleanup completed.");
         }
@@ -976,7 +980,7 @@ public class BackupHandler {
             if (!TieredBackupTest.shouldRemoveBackup(backup)) {
                 continue;
             }
-            FTBBackups.LOGGER.debug("Removing backup: {} (not retained)", backup.getBackupLocation());
+            FTBBackups.LOGGER.debug("Removing backup from list: {} (not retained)", backup.getBackupLocation());
             deleteBackup(backup);
         }
 

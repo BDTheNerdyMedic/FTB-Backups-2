@@ -97,7 +97,7 @@ public class ConfigData {
         @Comment("If a backup fails due to insufficient space, delete the oldest backup to free space and retry. Use cautiously.")
         public boolean free_space_if_needed = false;
 
-        @Comment("Remove incomplete backups during cleanup\nSet to false to keep them for debugging or recovery")
+        @Comment("Remove incomplete backups during cleanup. Set to false to keep them for debugging or recovery.")
         public boolean remove_incomplete_backups = true;
 
         // Backup Preview Options
