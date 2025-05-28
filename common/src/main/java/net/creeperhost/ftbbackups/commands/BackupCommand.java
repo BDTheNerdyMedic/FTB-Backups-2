@@ -111,19 +111,21 @@ public class BackupCommand {
                                         )
                                 )
                         )
+                        .then(Commands.literal("reload")
+                                .executes(BackupCommand::reloadConfig))
                 );
     }
 
     public static int hasPerm(MinecraftServer server) {
         if (server.isDedicatedServer() || (server.isSingleplayer() && server.isPublished())) {
-            return Config.cached().command_permission_level;
+            return Config.getConfigData().command_permission_level;
         }
         return 0;
     }
 
     private static int execute(CommandContext<CommandSourceStack> cs, String command, String name) {
         boolean isProtected = command.toLowerCase(Locale.ROOT).equals("snapshot");
-        int manualBackupsTime = Config.cached().manual_backups_time;
+        int manualBackupsTime = Config.getConfigData().manual_backups_time;
 
         if (manualBackupsTime > 0) {
             long configTimeFromMinutes = ((long) manualBackupsTime) * 60_000;
@@ -146,7 +148,7 @@ public class BackupCommand {
 
     private static int status(CommandContext<CommandSourceStack> context) {
         StringBuilder messageBuilder = new StringBuilder();
-        ConfigData config = Config.cached();
+        ConfigData config = Config.getConfigData();
 
         // Display whether backups are enabled or disabled
         if (config.enabled) {
@@ -214,7 +216,7 @@ public class BackupCommand {
             context.getSource().sendFailure(Component.literal("Unknown config option: " + optionName));
             return 0;
         }
-        ConfigData config = Config.cached();
+        ConfigData config = Config.getConfigData();
         Object value = option.getter.apply(config);
         final String valueStr;
         if (option.type == List.class) {
@@ -235,7 +237,7 @@ public class BackupCommand {
             return 0;
         }
 
-        ConfigData config = Config.cached();
+        ConfigData config = Config.getConfigData();
         try {
             if (option.type == List.class) {
                 // Get the current list
@@ -317,7 +319,7 @@ public class BackupCommand {
 
             // Save the updated configuration
             Config.update(config);
-            Config.saveConfigWithPause();
+            Config.save();
 
             // Handle special cases
             if (optionName.equals("backup_cron")) {
@@ -326,7 +328,6 @@ public class BackupCommand {
             if (optionName.equals("logging_level")) {
                 String newLevel = config.logging_level;
                 FTBBackups.setLoggerLevel(FTBBackups.LOGGER, newLevel);
-                FTBBackups.setLoggerLevel(FTBBackups.configWatcherLogger, newLevel);
                 FTBBackups.setLoggerLevel(FTBBackups.backupCleanerLogger, newLevel);
                 FTBBackups.setLoggerLevel(FTBBackups.backupExecutorLogger, newLevel);
                 FTBBackups.setLoggerLevel(FTBBackups.statusMonitorLogger, newLevel);
@@ -343,6 +344,32 @@ public class BackupCommand {
             return 0;
         }
         return 1;
+    }
+
+    /**
+    * Handles the reload command for the configuration.
+    * Provides feedback to the command source based on the result of the reload operation.
+    * 
+    * @param context The command context.
+    * @return An integer indicating the success (1) or failure (0) of the command.
+    */
+    private static int reloadConfig(CommandContext<CommandSourceStack> context) {
+        Config.LoadResult result = Config.reload();
+        switch (result) {
+            case UPDATED:
+                context.getSource().sendSuccess(() -> Component.literal("Configuration reloaded and updated."), false);
+                return 1;
+            case UNCHANGED:
+                context.getSource().sendSuccess(() -> Component.literal("Configuration reloaded, no changes detected."),
+                        false);
+                return 1;
+            case FAILED:
+                context.getSource().sendFailure(Component.literal("Failed to reload configuration."));
+                return 0;
+            default:
+                context.getSource().sendFailure(Component.literal("Unknown reload result."));
+                return 0;
+        }
     }
 
     private static class ConfigOption<T> {

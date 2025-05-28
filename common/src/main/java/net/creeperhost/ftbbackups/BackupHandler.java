@@ -102,9 +102,9 @@ public class BackupHandler {
         FTBBackups.LOGGER.debug("Server root set to: {}", serverRoot);
         FTBBackups.LOGGER.debug("Default backup location set to: {}", defaultBackupLocation);
 
-        if (!Config.cached().backup_location.equalsIgnoreCase(".")) {
+        if (!Config.getConfigData().backup_location.equalsIgnoreCase(".")) {
             try {
-                Path configPath = Path.of(Config.cached().backup_location);
+                Path configPath = Path.of(Config.getConfigData().backup_location);
                 if (Files.exists(configPath)) {
                     FTBBackups.LOGGER.info("Using configured backups directory at {}", configPath.toAbsolutePath());
                     backupFolderPath = configPath;
@@ -115,7 +115,7 @@ public class BackupHandler {
                 }
             } catch (Exception e) {
                 FTBBackups.LOGGER.error("Error accessing backup directory from config: {}",
-                        Config.cached().backup_location, e);
+                        Config.getConfigData().backup_location, e);
                 backupFolderPath = defaultBackupLocation;
             }
         } else {
@@ -158,7 +158,7 @@ public class BackupHandler {
      * @return A base64-encoded string of the preview image or an empty string if disabled or failed.
      */
     public static String createPreview(MinecraftServer minecraftServer) {
-        if (!Config.cached().enable_preview) {
+        if (!Config.getConfigData().enable_preview) {
             FTBBackups.LOGGER.info("Backup preview disabled in configuration.");
             backups.get().setLastPreview("");
             return "";
@@ -175,7 +175,7 @@ public class BackupHandler {
         FTBBackups.LOGGER.info("Starting backup preview generation...");
         long startTime = System.currentTimeMillis();
         try {
-            String previewDim = Config.cached().preview_dimension;
+            String previewDim = Config.getConfigData().preview_dimension;
             FTBBackups.LOGGER.debug("Preview dimension: {}", previewDim);
 
             Path worldPath = minecraftServer.getWorldPath(LevelResource.ROOT).toAbsolutePath();
@@ -188,7 +188,7 @@ public class BackupHandler {
             if ("all".equals(previewDim)) {
                 FTBBackups.LOGGER.debug("Scanning dimensions for activity clusters...");
                 List<ActivityScanner> scanners = new ArrayList<>();
-                List<String> dimensionsToScan = Config.cached().preview_dimensions_list;
+                List<String> dimensionsToScan = Config.getConfigData().preview_dimensions_list;
                 if (dimensionsToScan.isEmpty()) {
                     FTBBackups.LOGGER.debug("No specific dimensions listed, scanning all available dimensions.");
                     for (Level level : levelIO.getLevels()) {
@@ -278,7 +278,7 @@ public class BackupHandler {
      * @return A hexadecimal string of the SHA-256 hash, or an empty string if an error occurs.
      */
     private static String calculateWorldHash(MinecraftServer minecraftServer) {
-        String previewDim = Config.cached().preview_dimension;
+        String previewDim = Config.getConfigData().preview_dimension;
         List<ResourceLocation> dimensionsToHash = new ArrayList<>();
 
         // Determine which dimensions to hash
@@ -410,7 +410,7 @@ public class BackupHandler {
             return;
         }
 
-        Format format = Config.cached().backup_format;
+        Format format = Config.getConfigData().backup_format;
         // Create a new Backup object with the necessary details
         Backup backup = new Backup(
                 worldFolder.normalize().getFileName().toString(), // World folder name
@@ -460,13 +460,13 @@ public class BackupHandler {
      */
     private static boolean shouldSkipBackup(MinecraftServer minecraftServer) {
         FTBBackups.LOGGER.debug("Checking if backup should be skipped...");
-        if (FTBBackups.isShutdown || !Config.cached().enabled) {
+        if (FTBBackups.isShutdown || !Config.getConfigData().enabled) {
             FTBBackups.LOGGER.info("Skipping backup: mod is shutting down or disabled.");
             return true;
         }
 
         // Skip if there are backups and no player activity since the last one (if configured)
-        if (!backups.get().getBackups().isEmpty() && Config.cached().only_if_players_been_online && !isDirty()) {
+        if (!backups.get().getBackups().isEmpty() && Config.getConfigData().only_if_players_been_online && !isDirty()) {
             FTBBackups.LOGGER.info("Skipping backup: no players have been online since last backup.");
             return true;
         }
@@ -537,7 +537,7 @@ public class BackupHandler {
             alertPlayers(minecraftServer, Component.translatable(FTBBackups.MOD_ID + ".backup.starting"));
             List<Path> backupPaths = collectBackupPaths();
 
-            if (Config.cached().enable_status_monitoring) {
+            if (Config.getConfigData().enable_status_monitoring) {
                 scheduleStatusCheck(backupLocation, format, expectedSize, 5, TimeUnit.SECONDS);
             } else {
                 FTBBackups.LOGGER.debug("Status monitoring disabled in config.");
@@ -573,8 +573,8 @@ public class BackupHandler {
         backupPaths.add(worldFolder);
         FTBBackups.LOGGER.debug("Added world folder to backup paths: {}", worldFolder);
 
-        List<String> additionalFiles = Config.cached().additional_files;
-        List<String> excludedPatterns = Config.cached().excluded;
+        List<String> additionalFiles = Config.getConfigData().additional_files;
+        List<String> excludedPatterns = Config.getConfigData().excluded;
         if (!additionalFiles.isEmpty()) {
             try (Stream<Path> pathStream = Files.walk(serverRoot)) {
                 List<Path> paths = pathStream.toList();
@@ -696,7 +696,7 @@ public class BackupHandler {
         long elapsedTime = System.nanoTime() - startTime.get();
         backupRunning.set(false);
         alertPlayers(minecraftServer, Component.translatable("Backup finished in " + format(elapsedTime)
-                + (Config.cached().display_file_size ? " Size: " + FileUtils.getSizeString(backupSize) : "")));
+                + (Config.getConfigData().display_file_size ? " Size: " + FileUtils.getSizeString(backupSize) : "")));
         FTBBackups.LOGGER.info("New backup created at {} size: {} Took: {} Sha1: {}", backupLocation,
                 FileUtils.getSizeString(backupSize), format(elapsedTime), sha1);
 
@@ -749,7 +749,7 @@ public class BackupHandler {
         LocalDateTime now = LocalDateTime.now();
         DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss");
         String backupName = now.format(formatter);
-        switch (Config.cached().backup_format) {
+        switch (Config.getConfigData().backup_format) {
             case ZIP:
                 backupName += ".zip";
                 FTBBackups.LOGGER.debug("Backup format: ZIP, extension: .zip");
@@ -854,7 +854,7 @@ public class BackupHandler {
             }
     
             // Remove incomplete backups if configured
-            if (Config.cached().remove_incomplete_backups) {
+            if (Config.getConfigData().remove_incomplete_backups) {
                 List<Backup> incompleteBackups = backups.get().getBackups().stream()
                         .filter(backup -> !backup.isComplete())
                         .collect(Collectors.toList());
@@ -887,7 +887,7 @@ public class BackupHandler {
             }
     
             // Apply retention policies
-            switch (Config.cached().retention_mode) {
+            switch (Config.getConfigData().retention_mode) {
                 case MAX_BACKUPS:
                     FTBBackups.LOGGER.debug("Retention mode: MAX_BACKUPS");
                     cleanMax();
@@ -897,7 +897,7 @@ public class BackupHandler {
                     cleanTiered();
                     break;
                 default:
-                    FTBBackups.LOGGER.error("Unknown retention mode: {}", Config.cached().retention_mode);
+                    FTBBackups.LOGGER.error("Unknown retention mode: {}", Config.getConfigData().retention_mode);
                     break;
             }
             verifyOldBackups();
@@ -917,10 +917,10 @@ public class BackupHandler {
                 .collect(Collectors.toList());
 
         int backupsNeedRemoving = 0;
-        if (completeBackups.size() > Config.cached().max_backups) {
-            FTBBackups.LOGGER.info("More backups than {} found, removing oldest backups.", Config.cached().max_backups);
-            backupsNeedRemoving = completeBackups.size() - Config.cached().max_backups;
-        } else if (isSpaceConstrained && Config.cached().free_space_if_needed) {
+        if (completeBackups.size() > Config.getConfigData().max_backups) {
+            FTBBackups.LOGGER.info("More backups than {} found, removing oldest backups.", Config.getConfigData().max_backups);
+            backupsNeedRemoving = completeBackups.size() - Config.getConfigData().max_backups;
+        } else if (isSpaceConstrained && Config.getConfigData().free_space_if_needed) {
             FTBBackups.LOGGER.info("Insufficient space, removing oldest backup to free space.");
             isSpaceConstrained = false;
             backupsNeedRemoving = 1;
@@ -952,27 +952,27 @@ public class BackupHandler {
                 .sorted(Comparator.comparingLong(Backup::getCreateTime).reversed())
                 .collect(Collectors.toList());
 
-        if (backupsList.size() <= Config.cached().keep_latest) {
+        if (backupsList.size() <= Config.getConfigData().keep_latest) {
             FTBBackups.LOGGER.debug("No need to remove backups; within keep_latest limit.");
             return;
         }
 
         Map<Backup, String> backupsToKeep = new LinkedHashMap<>();
-        if (Config.cached().keep_latest > 0) {
+        if (Config.getConfigData().keep_latest > 0) {
             int kept = 0;
             for (Backup backup : backupsList) {
                 backupsToKeep.put(backup, "Latest");
                 kept++;
-                if (kept >= Config.cached().keep_latest) {
+                if (kept >= Config.getConfigData().keep_latest) {
                     break;
                 }
             }
         }
 
-        computeRetained(backupsList, backupsToKeep, Config.cached().keep_hourly, Calendar.HOUR_OF_DAY);
-        computeRetained(backupsList, backupsToKeep, Config.cached().keep_daily, Calendar.DAY_OF_YEAR);
-        computeRetained(backupsList, backupsToKeep, Config.cached().keep_weekly, Calendar.WEEK_OF_YEAR);
-        computeRetained(backupsList, backupsToKeep, Config.cached().keep_monthly, Calendar.MONTH);
+        computeRetained(backupsList, backupsToKeep, Config.getConfigData().keep_hourly, Calendar.HOUR_OF_DAY);
+        computeRetained(backupsList, backupsToKeep, Config.getConfigData().keep_daily, Calendar.DAY_OF_YEAR);
+        computeRetained(backupsList, backupsToKeep, Config.getConfigData().keep_weekly, Calendar.WEEK_OF_YEAR);
+        computeRetained(backupsList, backupsToKeep, Config.getConfigData().keep_monthly, Calendar.MONTH);
 
         backupsList.removeAll(backupsToKeep.keySet());
 
@@ -1186,10 +1186,10 @@ public class BackupHandler {
             return false;
         }
 
-        long minFreeSpace = Config.cached().minimum_free_space * 1000000L;
+        long minFreeSpace = Config.getConfigData().minimum_free_space * 1000000L;
         long free = backupFolderPath.toFile().getUsableSpace() - minFreeSpace;
         long currentWorldSize = FileUtils.getFolderSize(worldFolder);
-        for (String p : Config.cached().additional_files) {
+        for (String p : Config.getConfigData().additional_files) {
             try {
                 Path path = worldFolder.getParent().resolve(p);
                 if (Files.exists(path)) {
@@ -1313,11 +1313,11 @@ public class BackupHandler {
      */
     public static void alertPlayers(MinecraftServer minecraftServer, Component message) {
         FTBBackups.LOGGER.debug("Alerting players with message: {}", message.getString());
-        if (Config.cached().do_not_notify) {
+        if (Config.getConfigData().do_not_notify) {
             FTBBackups.LOGGER.debug("Notifications disabled, skipping alert.");
             return;
         }
-        if (Config.cached().notify_op_only && minecraftServer instanceof DedicatedServer) {
+        if (Config.getConfigData().notify_op_only && minecraftServer instanceof DedicatedServer) {
             FTBBackups.LOGGER.debug("Notifying operators only.");
             for (ServerPlayer player : minecraftServer.getPlayerList().getPlayers()) {
                 if (player.hasPermissions(4)) {
@@ -1354,7 +1354,6 @@ public class BackupHandler {
      * @return True if the backup state is dirty, false otherwise.
      */
     public static boolean isDirty() {
-        loadJson();
         return backups.get().isDirty();
     }
 

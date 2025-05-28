@@ -31,14 +31,11 @@ import java.util.concurrent.TimeUnit;
 public class FTBBackups {
     public static final String MOD_ID = "ftbbackups2";
     public static final Logger LOGGER = LogManager.getLogger(FTBBackups.class);
-    public static final Logger configWatcherLogger = LogManager.getLogger("FTBBackups.ConfigWatcher");
     public static final Logger backupCleanerLogger = LogManager.getLogger("FTBBackups.BackupCleaner");
     public static final Logger backupExecutorLogger = LogManager.getLogger("FTBBackups.BackupExecutor");
     public static final Logger statusMonitorLogger = LogManager.getLogger("FTBBackups.StatusMonitor");
     public static Path configFile = Platform.getConfigFolder().resolve(MOD_ID + ".json");
 
-    public static final ScheduledExecutorService configWatcherExecutorService = createScheduledExecutor(
-            "Config Watcher", configWatcherLogger);
     public static final ScheduledExecutorService backupCleanerExecutorService = createScheduledExecutor(
             "Backup Cleaner", backupCleanerLogger);
     public static final ScheduledExecutorService statusMonitorExecutorService = createScheduledExecutor(
@@ -56,11 +53,10 @@ public class FTBBackups {
         LOGGER.info("Starting FTB Backups initialization...");
         Config.init(configFile.toFile());
 
-        setLoggerLevel(LOGGER, Config.cached().logging_level);
-        setLoggerLevel(configWatcherLogger, Config.cached().logging_level);
-        setLoggerLevel(backupCleanerLogger, Config.cached().logging_level);
-        setLoggerLevel(backupExecutorLogger, Config.cached().logging_level);
-        setLoggerLevel(statusMonitorLogger, Config.cached().logging_level);
+        setLoggerLevel(LOGGER, Config.getConfigData().logging_level);
+        setLoggerLevel(backupCleanerLogger, Config.getConfigData().logging_level);
+        setLoggerLevel(backupExecutorLogger, Config.getConfigData().logging_level);
+        setLoggerLevel(statusMonitorLogger, Config.getConfigData().logging_level);
 
         LOGGER.debug("Configuration loaded from {}", configFile.toString());
 
@@ -77,11 +73,11 @@ public class FTBBackups {
             BackupHandler.clean();
         }, 30, 300, TimeUnit.SECONDS);
 
-        if (!CronExpression.isValidExpression(Config.cached().backup_cron)) {
+        if (!CronExpression.isValidExpression(Config.getConfigData().backup_cron)) {
             LOGGER.error("Invalid backup_cron expression: {}. Restoring default value: '0 */30 * * * ?'.",
-                    Config.cached().backup_cron);
-            Config.cached().backup_cron = "0 */30 * * * ?";
-            Config.saveConfigWithPause();
+                    Config.getConfigData().backup_cron);
+            Config.getConfigData().backup_cron = "0 */30 * * * ?";
+            Config.save();
         }
 
         try {
@@ -95,11 +91,11 @@ public class FTBBackups {
             scheduler = schedulerFactory.getScheduler();
             CronTrigger trigger = TriggerBuilder.newTrigger()
                     .withIdentity(MOD_ID)
-                    .withSchedule(CronScheduleBuilder.cronSchedule(Config.cached().backup_cron))
+                    .withSchedule(CronScheduleBuilder.cronSchedule(Config.getConfigData().backup_cron))
                     .build();
             scheduler.start();
             scheduler.scheduleJob(jobDetail, trigger);
-            LOGGER.info("Backup scheduler started with cron expression: {}", Config.cached().backup_cron);
+            LOGGER.info("Backup scheduler started with cron expression: {}", Config.getConfigData().backup_cron);
         } catch (Exception e) {
             LOGGER.error("Failed to start backup scheduler", e);
         }
@@ -281,34 +277,7 @@ public class FTBBackups {
             }
         }
 
-        // Step 5: Close the WatchService
-        if (Config.watcher.get() != null) {
-            try {
-                Config.watcher.get().close();
-                LOGGER.debug("Config watcher closed successfully.");
-            } catch (Exception e) {
-                LOGGER.error("Error closing config watcher", e);
-            }
-        }
-
-        // Step 6: Shut down the config watcher executor
-        if (configWatcherExecutorService != null && !configWatcherExecutorService.isShutdown()) {
-            try {
-                configWatcherExecutorService.shutdown();
-                if (!configWatcherExecutorService.awaitTermination(5, TimeUnit.SECONDS)) {
-                    LOGGER.warn("Config watcher executor did not terminate within 5 seconds, forcing shutdown.");
-                    configWatcherExecutorService.shutdownNow();
-                } else {
-                    LOGGER.debug("Config watcher executor shut down successfully.");
-                }
-            } catch (InterruptedException e) {
-                configWatcherExecutorService.shutdownNow();
-                Thread.currentThread().interrupt();
-                LOGGER.error("Interrupted while shutting down config watcher executor", e);
-            }
-        }
-
-        // Step 7: Finalize shutdown tasks
+        // Step 5: Finalize shutdown tasks
         try {
             BackupHandler.backupRunning.set(false);
             BackupHandler.updateJson();
