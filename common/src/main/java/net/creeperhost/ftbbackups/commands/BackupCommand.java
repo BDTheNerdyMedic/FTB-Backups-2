@@ -8,8 +8,9 @@ import net.creeperhost.ftbbackups.BackupHandler;
 import net.creeperhost.ftbbackups.FTBBackups;
 import net.creeperhost.ftbbackups.config.Config;
 import net.creeperhost.ftbbackups.config.ConfigData;
-import net.creeperhost.ftbbackups.config.Format;
-import net.creeperhost.ftbbackups.config.RetentionMode;
+import net.creeperhost.ftbbackups.config.ConfigData.Format;
+import net.creeperhost.ftbbackups.config.ConfigData.NotificationMode;
+import net.creeperhost.ftbbackups.config.ConfigData.RetentionMode;
 import net.creeperhost.ftbbackups.data.Backup;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
@@ -40,7 +41,7 @@ public class BackupCommand {
     static {
         CONFIG_OPTIONS.put("enabled", new ConfigOption<>("enabled", boolean.class, config -> config.enabled, (config, value) -> config.enabled = Boolean.parseBoolean(value)));
         CONFIG_OPTIONS.put("command_permission_level", new ConfigOption<>("command_permission_level", int.class, config -> config.command_permission_level, (config, value) -> config.command_permission_level = Integer.parseInt(value)));
-        CONFIG_OPTIONS.put("notification_mode", new ConfigOption<>("notification_mode", ConfigData.NotificationMode.class, config -> config.notification_mode, (config, value) -> config.notification_mode = ConfigData.NotificationMode.valueOf(value.toUpperCase())));
+        CONFIG_OPTIONS.put("notification_mode", new ConfigOption<>("notification_mode", NotificationMode.class, config -> config.notification_mode, (config, value) -> config.notification_mode = NotificationMode.valueOf(value.toUpperCase())));
         CONFIG_OPTIONS.put("enable_console_progress", new ConfigOption<>("enable_console_progress", boolean.class, config -> config.enable_console_progress, (config, value) -> config.enable_console_progress = Boolean.parseBoolean(value)));
         CONFIG_OPTIONS.put("logging_level", new ConfigOption<>("logging_level", String.class, config -> config.logging_level, (config, value) -> config.logging_level = value));
         CONFIG_OPTIONS.put("retention_mode", new ConfigOption<>("retention_mode", RetentionMode.class, config -> config.retention_mode, (config, value) -> config.retention_mode = RetentionMode.valueOf(value.toUpperCase())));
@@ -77,7 +78,7 @@ public class BackupCommand {
             } else if (option.equals("backup_format")) {
                 return SharedSuggestionProvider.suggest(Arrays.stream(Format.values()).map(Enum::name), builder);
             } else if (option.equals("notification_mode")) {
-                return SharedSuggestionProvider.suggest(Arrays.stream(ConfigData.NotificationMode.values()).map(Enum::name), builder);
+                return SharedSuggestionProvider.suggest(Arrays.stream(NotificationMode.values()).map(Enum::name), builder);
             }
         }
         return SharedSuggestionProvider.suggest(new String[0], builder);
@@ -302,6 +303,9 @@ public class BackupCommand {
                     option.setter.accept(config, String.valueOf(longValue));
                 } else if (option.type == String.class) {
                     option.setter.accept(config, valueStr);
+                } else if (option.type == NotificationMode.class) {
+                    NotificationMode notify = NotificationMode.valueOf(valueStr.toUpperCase());
+                    option.setter.accept(config, notify.name());
                 } else if (option.type == RetentionMode.class) {
                     RetentionMode mode = RetentionMode.valueOf(valueStr.toUpperCase());
                     option.setter.accept(config, mode.name());
@@ -312,8 +316,7 @@ public class BackupCommand {
                     context.getSource().sendFailure(Component.literal("Unsupported config type for " + optionName));
                     return 0;
                 }
-                context.getSource().sendSuccess(() -> Component.literal("Set " + optionName + " to " + valueStr),
-                        false);
+                context.getSource().sendSuccess(() -> Component.literal("Set " + optionName + " to " + valueStr), false);
             }
 
             // Save the updated configuration

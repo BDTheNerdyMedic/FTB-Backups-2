@@ -4,7 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import net.creeperhost.ftbbackups.config.Config;
 import net.creeperhost.ftbbackups.config.ConfigData;
-import net.creeperhost.ftbbackups.config.Format;
+import net.creeperhost.ftbbackups.config.ConfigData.Format;
 import net.creeperhost.ftbbackups.data.Backup;
 import net.creeperhost.ftbbackups.data.Backups;
 import net.creeperhost.ftbbackups.utils.FileUtils;

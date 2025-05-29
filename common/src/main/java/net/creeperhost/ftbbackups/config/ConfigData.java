@@ -7,15 +7,26 @@ import java.util.List;
 
 public class ConfigData {
 
+  public enum NotificationMode {
+      NONE,
+      OPS_ONLY,
+      ALL_PLAYERS
+  }
+
+  public enum RetentionMode {
+      MAX_BACKUPS,
+      TIERED
+  }
+
+  public enum Format {
+      ZIP,
+      ZSTD,
+      DIRECTORY
+  }
+
   // General Backup Settings
   // -----------------------
   // These settings control the overall behavior of the backup system.
-
-  public enum NotificationMode {
-      NONE, // No player notifications
-      OPS_ONLY, // Notifications for operators only
-      ALL_PLAYERS // Notifications for all players
-  }
 
   @Comment("\n" +
           " * Enables or disables automatic backups. When true, backups occur based on 'backup_cron'. When false, use /backup manually if permitted.\n")

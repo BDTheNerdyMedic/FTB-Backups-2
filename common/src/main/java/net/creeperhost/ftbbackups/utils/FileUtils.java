@@ -6,7 +6,7 @@ import com.google.common.hash.Hashing;
 import io.airlift.compress.zstd.ZstdOutputStream;
 import net.creeperhost.ftbbackups.FTBBackups;
 import net.creeperhost.ftbbackups.config.Config;
-import net.creeperhost.ftbbackups.config.Format;
+import net.creeperhost.ftbbackups.config.ConfigData.Format;
 import org.kamranzafar.jtar.TarEntry;
 import org.kamranzafar.jtar.TarOutputStream;
 

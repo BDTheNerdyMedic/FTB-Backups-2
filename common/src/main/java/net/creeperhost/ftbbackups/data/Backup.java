@@ -1,6 +1,6 @@
 package net.creeperhost.ftbbackups.data;
 
-import net.creeperhost.ftbbackups.config.Format;
+import net.creeperhost.ftbbackups.config.ConfigData.Format;
 
 import java.util.Objects;
 
