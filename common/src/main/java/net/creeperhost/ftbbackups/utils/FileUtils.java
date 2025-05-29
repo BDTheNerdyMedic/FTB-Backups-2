@@ -54,7 +54,7 @@ public class FileUtils {
         }
         try {
             Path relFile = serverRoot.relativize(file);
-            if (matchesAny(relFile, Config.getConfigData().excluded)) {
+            if (matchesAny(relFile, Config.getConfigData().excluded_paths)) {
                 FTBBackups.LOGGER.debug("Skipping excluded file: {}", relFile);
                 return;
             }
@@ -104,7 +104,7 @@ public class FileUtils {
         }
         try {
             Path relFile = serverRoot.relativize(file);
-            if (matchesAny(relFile, Config.getConfigData().excluded)) {
+            if (matchesAny(relFile, Config.getConfigData().excluded_paths)) {
                 FTBBackups.LOGGER.debug("Skipping excluded file: {}", relFile);
                 return false;
             }

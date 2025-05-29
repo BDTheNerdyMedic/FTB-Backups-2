@@ -18,6 +18,7 @@ import java.nio.charset.Charset;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -257,7 +258,41 @@ public class Config {
             if ("none".equalsIgnoreCase(config.preview_dimension)) {
                 config.enable_preview = false;
                 config.preview_dimension = "minecraft:overworld";
-                LOGGER.debug("Adjusted deprecated 'preview_dimension' from 'none' to 'minecraft:overworld' and disabled 'enable_preview'.");
+                LOGGER.debug(
+                        "Adjusted deprecated 'preview_dimension' from 'none' to 'minecraft:overworld' and disabled 'enable_preview'.");
+            }
+
+            // Migrate additional_files to additional_paths
+            if (jObject.containsKey("additional_files")) {
+                @SuppressWarnings("unchecked")
+                List<String> files = (List<String>) jObject.get(List.class, "additional_files");
+                if (files != null) {
+                    config.additional_paths.addAll(files);
+                    LOGGER.info("Migrated 'additional_files' to 'additional_paths'");
+                }
+                jObject.remove("additional_files");
+            }
+    
+            // Migrate additional_directories to additional_paths
+            if (jObject.containsKey("additional_directories")) {
+                @SuppressWarnings("unchecked")
+                List<String> directories = (List<String>) jObject.get(List.class, "additional_directories");
+                if (directories != null) {
+                    config.additional_paths.addAll(directories);
+                    LOGGER.info("Migrated 'additional_directories' to 'additional_paths'");
+                }
+                jObject.remove("additional_directories");
+            }
+    
+            // Migrate excluded to excluded_paths
+            if (jObject.containsKey("excluded")) {
+                @SuppressWarnings("unchecked")
+                List<String> excluded = (List<String>) jObject.get(List.class, "excluded");
+                if (excluded != null) {
+                    config.excluded_paths.addAll(excluded);
+                    LOGGER.info("Migrated 'excluded' to 'excluded_paths'");
+                }
+                jObject.remove("excluded");
             }
         } catch (IOException e) {
             LOGGER.error("Failed to load configuration file for deprecated option adjustment: {}", lastFile.getAbsolutePath(), e);

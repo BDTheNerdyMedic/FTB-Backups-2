@@ -128,14 +128,11 @@ public class ConfigData {
       +
       " * Examples:\n" +
       " * - 'config/' (backs up the entire config folder)\n" +
-      " * - 'local/ftbutilities/' (includes FTB Utilities data)\n" +
-      " * - 'server-icon.png' (backs up the server icon)\n" +
-      " * - 'backups/*.zip' (includes specific backup files, if desired)\n" +
-      " * Special case: To back up the entire server, use '/'—but ensure 'backup_location' points to an external directory (e.g., '/path/to/external/backups') to avoid including backup files in future backups.\n"
-      +
-      " * Tip: Test your paths to confirm they include exactly what you need!\n" +
+      " * - 'server.properties' (backs up the server properties)\n" +
+      " * - 'logs/*.log' (includes recent log files)\n" +
+      " * Special case: To back up the entire server, use '/'—but ensure 'backup_location' points to an external directory (e.g., '/path/to/external/backups') to avoid including backup files in backups.\n" +
       " */")
-  public List<String> additional_files = new ArrayList<>();
+  public List<String> additional_paths = new ArrayList<>();
 
   @Comment("/*\n" +
       " * Excludes files or directories from backups. Uses the same syntax as 'additional_files'.\n" +
@@ -144,7 +141,7 @@ public class ConfigData {
       " * - 'session.lock' (specific file)\n" +
       " * - 'logs/*.gz' (wildcard for compressed logs)\n" +
       " */")
-  public List<String> excluded = new ArrayList<>();
+  public List<String> excluded_paths = new ArrayList<>();
 
   // Backup Location and Format
   // --------------------------

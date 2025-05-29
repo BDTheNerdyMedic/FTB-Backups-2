@@ -53,8 +53,8 @@ public class BackupCommand {
         CONFIG_OPTIONS.put("backup_cron", new ConfigOption<>("backup_cron", String.class, config -> config.backup_cron, (config, value) -> config.backup_cron = value));
         CONFIG_OPTIONS.put("manual_backups_time", new ConfigOption<>("manual_backups_time", int.class, config -> config.manual_backups_time, (config, value) -> config.manual_backups_time = Integer.parseInt(value)));
         CONFIG_OPTIONS.put("only_if_players_been_online", new ConfigOption<>("only_if_players_been_online", boolean.class, config -> config.only_if_players_been_online, (config, value) -> config.only_if_players_been_online = Boolean.parseBoolean(value)));
-        CONFIG_OPTIONS.put("additional_files", new ConfigOption<>("additional_files", List.class, config -> config.additional_files, (config, value) -> config.additional_files = Arrays.asList(value.split(","))));
-        CONFIG_OPTIONS.put("excluded", new ConfigOption<>("excluded", List.class, config -> config.excluded, (config, value) -> config.excluded = Arrays.asList(value.split(","))));
+        CONFIG_OPTIONS.put("additional_paths", new ConfigOption<>("additional_paths", List.class, config -> config.additional_paths, (config, value) -> config.additional_paths = Arrays.asList(value.split(","))));
+        CONFIG_OPTIONS.put("excluded_paths", new ConfigOption<>("excluded_paths", List.class, config -> config.excluded_paths, (config, value) -> config.excluded_paths = Arrays.asList(value.split(","))));
         CONFIG_OPTIONS.put("backup_location", new ConfigOption<>("backup_location", String.class, config -> config.backup_location, (config, value) -> config.backup_location = value));
         CONFIG_OPTIONS.put("backup_format", new ConfigOption<>("backup_format", Format.class, config -> config.backup_format, (config, value) -> config.backup_format = Format.valueOf(value.toUpperCase())));
         CONFIG_OPTIONS.put("minimum_free_space", new ConfigOption<>("minimum_free_space", long.class, config -> config.minimum_free_space, (config, value) -> config.minimum_free_space = Long.parseLong(value)));

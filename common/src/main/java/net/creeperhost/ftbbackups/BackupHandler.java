@@ -574,14 +574,14 @@ public class BackupHandler {
         backupPaths.add(worldFolder);
         FTBBackups.LOGGER.debug("Added world folder to backup paths: {}", worldFolder);
 
-        List<String> additionalFiles = Config.getConfigData().additional_files;
-        List<String> excludedPatterns = Config.getConfigData().excluded;
-        if (!additionalFiles.isEmpty()) {
+        List<String> additionalPaths = Config.getConfigData().additional_paths;
+        List<String> excludedPatterns = Config.getConfigData().excluded_paths;
+        if (!additionalPaths.isEmpty()) {
             try (Stream<Path> pathStream = Files.walk(serverRoot)) {
                 List<Path> paths = pathStream.toList();
                 for (Path path : paths) {
                     Path relFile = serverRoot.relativize(path);
-                    if (FileUtils.matchesAny(relFile, additionalFiles)
+                    if (FileUtils.matchesAny(relFile, additionalPaths)
                             && !FileUtils.matchesAny(relFile, excludedPatterns)) {
                         if (!FileUtils.isChildOf(path, serverRoot)) {
                             FTBBackups.LOGGER.warn("Ignoring path {}: not a child of server root.", relFile);
@@ -1193,7 +1193,7 @@ public class BackupHandler {
         long minFreeSpace = Config.getConfigData().minimum_free_space * 1000000L;
         long free = backupFolderPath.toFile().getUsableSpace() - minFreeSpace;
         long currentWorldSize = FileUtils.getFolderSize(worldFolder);
-        for (String p : Config.getConfigData().additional_files) {
+        for (String p : Config.getConfigData().additional_paths) {
             try {
                 Path path = worldFolder.getParent().resolve(p);
                 if (Files.exists(path)) {
