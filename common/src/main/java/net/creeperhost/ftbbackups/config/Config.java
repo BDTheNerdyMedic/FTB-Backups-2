@@ -1,9 +1,12 @@
 package net.creeperhost.ftbbackups.config;
 
+import blue.endless.jankson.api.SyntaxError;
 import blue.endless.jankson.Jankson;
 import blue.endless.jankson.JsonElement;
 import blue.endless.jankson.JsonGrammar;
 import blue.endless.jankson.JsonObject;
+import net.creeperhost.ftbbackups.config.ConfigData.NotificationMode;
+
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.commons.io.IOUtils;
@@ -233,10 +236,35 @@ public class Config {
      * @param config The ConfigData instance to adjust.
      */
     private static void adjustDeprecatedOptions(ConfigData config) {
-        if ("none".equalsIgnoreCase(config.preview_dimension)) {
-            config.enable_preview = false;
-            config.preview_dimension = "minecraft:overworld";
-            LOGGER.debug("Adjusted deprecated 'preview_dimension' from 'none' to 'minecraft:overworld' and disabled 'enable_preview'.");
+        try {
+            JsonObject jObject = GSON.load(lastFile);
+    
+            // Map old notification options to notification_mode
+            if (jObject.containsKey("do_not_notify")) {
+                boolean doNotNotify = jObject.getBoolean("do_not_notify", false);
+                if (doNotNotify) {
+                    config.notification_mode = NotificationMode.NONE;
+                } else if (jObject.containsKey("notify_op_only")) {
+                    boolean notifyOpOnly = jObject.getBoolean("notify_op_only", true);
+                    config.notification_mode = notifyOpOnly ? NotificationMode.OPS_ONLY : NotificationMode.ALL_PLAYERS;
+                } else {
+                    config.notification_mode = NotificationMode.ALL_PLAYERS;
+                }
+                LOGGER.debug("Mapped old notification options to notification_mode: {}", config.notification_mode);
+            }
+    
+            // Existing preview_dimension adjustment
+            if ("none".equalsIgnoreCase(config.preview_dimension)) {
+                config.enable_preview = false;
+                config.preview_dimension = "minecraft:overworld";
+                LOGGER.debug("Adjusted deprecated 'preview_dimension' from 'none' to 'minecraft:overworld' and disabled 'enable_preview'.");
+            }
+        } catch (IOException e) {
+            LOGGER.error("Failed to load configuration file for deprecated option adjustment: {}", lastFile.getAbsolutePath(), e);
+            // Optionally, set default values or proceed without adjustments
+        } catch (SyntaxError e) {
+            LOGGER.error("Syntax error in configuration file: {}", lastFile.getAbsolutePath(), e);
+            // Optionally, set default values or proceed without adjustments
         }
     }
 }

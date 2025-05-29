@@ -3,6 +3,7 @@ package net.creeperhost.ftbbackups;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import net.creeperhost.ftbbackups.config.Config;
+import net.creeperhost.ftbbackups.config.ConfigData;
 import net.creeperhost.ftbbackups.config.Format;
 import net.creeperhost.ftbbackups.data.Backup;
 import net.creeperhost.ftbbackups.data.Backups;
@@ -537,10 +538,10 @@ public class BackupHandler {
             alertPlayers(minecraftServer, Component.translatable(FTBBackups.MOD_ID + ".backup.starting"));
             List<Path> backupPaths = collectBackupPaths();
 
-            if (Config.getConfigData().enable_status_monitoring) {
+            if (Config.getConfigData().enable_console_progress) {
                 scheduleStatusCheck(backupLocation, format, expectedSize, 5, TimeUnit.SECONDS);
             } else {
-                FTBBackups.LOGGER.debug("Status monitoring disabled in config.");
+                FTBBackups.LOGGER.debug("Console progress disabled.");
             }
 
             FTBBackups.LOGGER.debug("Generating backup preview before file operations...");
@@ -695,8 +696,11 @@ public class BackupHandler {
 
         long elapsedTime = System.nanoTime() - startTime.get();
         backupRunning.set(false);
-        alertPlayers(minecraftServer, Component.translatable("Backup finished in " + format(elapsedTime)
-                + (Config.getConfigData().display_file_size ? " Size: " + FileUtils.getSizeString(backupSize) : "")));
+
+        if (Config.getConfigData().notification_mode != ConfigData.NotificationMode.NONE) {
+            String msg = "Backup finished in " + format(elapsedTime) + " Size: " + FileUtils.getSizeString(backupSize);
+            alertPlayers(minecraftServer, Component.translatable(msg));
+        }
         FTBBackups.LOGGER.info("New backup created at {} size: {} Took: {} Sha1: {}", backupLocation,
                 FileUtils.getSizeString(backupSize), format(elapsedTime), sha1);
 
@@ -1313,11 +1317,12 @@ public class BackupHandler {
      */
     public static void alertPlayers(MinecraftServer minecraftServer, Component message) {
         FTBBackups.LOGGER.debug("Alerting players with message: {}", message.getString());
-        if (Config.getConfigData().do_not_notify) {
-            FTBBackups.LOGGER.debug("Notifications disabled, skipping alert.");
+        ConfigData.NotificationMode mode = Config.getConfigData().notification_mode;
+        if (mode == ConfigData.NotificationMode.NONE) {
+            FTBBackups.LOGGER.debug("Player notifications disabled, skipping alert.");
             return;
         }
-        if (Config.getConfigData().notify_op_only && minecraftServer instanceof DedicatedServer) {
+        if (mode == ConfigData.NotificationMode.OPS_ONLY && minecraftServer instanceof DedicatedServer) {
             FTBBackups.LOGGER.debug("Notifying operators only.");
             for (ServerPlayer player : minecraftServer.getPlayerList().getPlayers()) {
                 if (player.hasPermissions(4)) {
@@ -1325,7 +1330,7 @@ public class BackupHandler {
                     FTBBackups.LOGGER.debug("Notified operator: {}", player.getName().getString());
                 }
             }
-        } else {
+        } else if (mode == ConfigData.NotificationMode.ALL_PLAYERS) {
             FTBBackups.LOGGER.debug("Notifying all players.");
             for (ServerPlayer player : minecraftServer.getPlayerList().getPlayers()) {
                 player.displayClientMessage(message, false);

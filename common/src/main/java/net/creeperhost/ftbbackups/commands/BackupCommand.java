@@ -40,10 +40,8 @@ public class BackupCommand {
     static {
         CONFIG_OPTIONS.put("enabled", new ConfigOption<>("enabled", boolean.class, config -> config.enabled, (config, value) -> config.enabled = Boolean.parseBoolean(value)));
         CONFIG_OPTIONS.put("command_permission_level", new ConfigOption<>("command_permission_level", int.class, config -> config.command_permission_level, (config, value) -> config.command_permission_level = Integer.parseInt(value)));
-        CONFIG_OPTIONS.put("notify_op_only", new ConfigOption<>("notify_op_only", boolean.class, config -> config.notify_op_only, (config, value) -> config.notify_op_only = Boolean.parseBoolean(value)));
-        CONFIG_OPTIONS.put("do_not_notify", new ConfigOption<>("do_not_notify", boolean.class, config -> config.do_not_notify, (config, value) -> config.do_not_notify = Boolean.parseBoolean(value)));
-        CONFIG_OPTIONS.put("display_file_size", new ConfigOption<>("display_file_size", boolean.class, config -> config.display_file_size, (config, value) -> config.display_file_size = Boolean.parseBoolean(value)));
-        CONFIG_OPTIONS.put("enable_status_monitoring", new ConfigOption<>("enable_status_monitoring", boolean.class, config -> config.enable_status_monitoring, (config, value) -> config.enable_status_monitoring = Boolean.parseBoolean(value)));
+        CONFIG_OPTIONS.put("notification_mode", new ConfigOption<>("notification_mode", ConfigData.NotificationMode.class, config -> config.notification_mode, (config, value) -> config.notification_mode = ConfigData.NotificationMode.valueOf(value.toUpperCase())));
+        CONFIG_OPTIONS.put("enable_console_progress", new ConfigOption<>("enable_console_progress", boolean.class, config -> config.enable_console_progress, (config, value) -> config.enable_console_progress = Boolean.parseBoolean(value)));
         CONFIG_OPTIONS.put("logging_level", new ConfigOption<>("logging_level", String.class, config -> config.logging_level, (config, value) -> config.logging_level = value));
         CONFIG_OPTIONS.put("retention_mode", new ConfigOption<>("retention_mode", RetentionMode.class, config -> config.retention_mode, (config, value) -> config.retention_mode = RetentionMode.valueOf(value.toUpperCase())));
         CONFIG_OPTIONS.put("max_backups", new ConfigOption<>("max_backups", int.class, config -> config.max_backups, (config, value) -> config.max_backups = Integer.parseInt(value)));
@@ -79,6 +77,8 @@ public class BackupCommand {
                 return SharedSuggestionProvider.suggest(new String[]{"DEBUG", "INFO", "WARN", "ERROR"}, builder);
             } else if (option.equals("backup_format")) {
                 return SharedSuggestionProvider.suggest(Arrays.stream(Format.values()).map(Enum::name), builder);
+            } else if (option.equals("notification_mode")) {
+                return SharedSuggestionProvider.suggest(Arrays.stream(ConfigData.NotificationMode.values()).map(Enum::name), builder);
             }
         }
         return SharedSuggestionProvider.suggest(new String[0], builder);
