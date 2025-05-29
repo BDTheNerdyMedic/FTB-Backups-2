@@ -7,6 +7,7 @@ import dev.architectury.event.events.common.PlayerEvent;
 import dev.architectury.platform.Platform;
 import net.creeperhost.ftbbackups.commands.BackupCommand;
 import net.creeperhost.ftbbackups.config.Config;
+import net.creeperhost.ftbbackups.config.ConfigData.LoggingLevel;
 import net.minecraft.server.MinecraftServer;
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.Logger;
@@ -118,12 +119,12 @@ public class FTBBackups {
     /**
      * Sets the logging level for a given logger.
      *
-     * @param logger    The logger to configure.
-     * @param levelName The desired logging level (e.g., "DEBUG", "INFO").
+     * @param logger       The logger to configure.
+     * @param loggingLevel The desired logging level as a LoggingLevel enum.
      */
-    public static void setLoggerLevel(Logger logger, String levelName) {
+    public static void setLoggerLevel(Logger logger, LoggingLevel loggingLevel) {
         try {
-            Level level = Level.toLevel(levelName);
+            Level level = Level.toLevel(loggingLevel.name());
             LoggerContext ctx = (LoggerContext) LogManager.getContext(false);
             Configuration config = ctx.getConfiguration();
             LoggerConfig loggerConfig = config.getLoggerConfig(logger.getName());
@@ -131,8 +132,8 @@ public class FTBBackups {
             ctx.updateLoggers();
             LOGGER.debug("Logging level set to: {} for logger: {}", level, logger.getName());
         } catch (IllegalArgumentException e) {
-            LOGGER.warn("Invalid logging level: {}. Defaulting to INFO for logger: {}", levelName, logger.getName());
-            setLoggerLevel(logger, "INFO");
+            LOGGER.warn("Invalid logging level: {}. Defaulting to INFO for logger: {}", loggingLevel.name(), logger.getName());
+            setLoggerLevel(logger, LoggingLevel.INFO);
         }
     }
 

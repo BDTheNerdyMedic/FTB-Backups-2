@@ -24,6 +24,13 @@ public class ConfigData {
       DIRECTORY
   }
 
+  public enum LoggingLevel {
+      DEBUG,
+      INFO,
+      WARN,
+      ERROR
+  }
+
   // General Backup Settings
   // -----------------------
   // These settings control the overall behavior of the backup system.
@@ -54,7 +61,7 @@ public class ConfigData {
 
   @Comment("\n" +
       " * Sets the logging level for the mod. Options: DEBUG, INFO, WARN, ERROR. DEBUG provides detailed logs in debug.log for troubleshooting.\n")
-  public String logging_level = "INFO";
+  public LoggingLevel logging_level = LoggingLevel.INFO;
 
   // Backup Retention Settings
   // -------------------------

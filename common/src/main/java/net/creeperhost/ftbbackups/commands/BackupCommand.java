@@ -9,6 +9,7 @@ import net.creeperhost.ftbbackups.FTBBackups;
 import net.creeperhost.ftbbackups.config.Config;
 import net.creeperhost.ftbbackups.config.ConfigData;
 import net.creeperhost.ftbbackups.config.ConfigData.Format;
+import net.creeperhost.ftbbackups.config.ConfigData.LoggingLevel;
 import net.creeperhost.ftbbackups.config.ConfigData.NotificationMode;
 import net.creeperhost.ftbbackups.config.ConfigData.RetentionMode;
 import net.creeperhost.ftbbackups.data.Backup;
@@ -43,7 +44,7 @@ public class BackupCommand {
         CONFIG_OPTIONS.put("command_permission_level", new ConfigOption<>("command_permission_level", int.class, config -> config.command_permission_level, (config, value) -> config.command_permission_level = Integer.parseInt(value)));
         CONFIG_OPTIONS.put("notification_mode", new ConfigOption<>("notification_mode", NotificationMode.class, config -> config.notification_mode, (config, value) -> config.notification_mode = NotificationMode.valueOf(value.toUpperCase())));
         CONFIG_OPTIONS.put("enable_console_progress", new ConfigOption<>("enable_console_progress", boolean.class, config -> config.enable_console_progress, (config, value) -> config.enable_console_progress = Boolean.parseBoolean(value)));
-        CONFIG_OPTIONS.put("logging_level", new ConfigOption<>("logging_level", String.class, config -> config.logging_level, (config, value) -> config.logging_level = value));
+        CONFIG_OPTIONS.put("logging_level", new ConfigOption<>("logging_level", LoggingLevel.class, config -> config.logging_level, (config, value) -> config.logging_level = LoggingLevel.valueOf(value.toUpperCase())));
         CONFIG_OPTIONS.put("retention_mode", new ConfigOption<>("retention_mode", RetentionMode.class, config -> config.retention_mode, (config, value) -> config.retention_mode = RetentionMode.valueOf(value.toUpperCase())));
         CONFIG_OPTIONS.put("max_backups", new ConfigOption<>("max_backups", int.class, config -> config.max_backups, (config, value) -> config.max_backups = Integer.parseInt(value)));
         CONFIG_OPTIONS.put("keep_latest", new ConfigOption<>("keep_latest", int.class, config -> config.keep_latest, (config, value) -> config.keep_latest = Integer.parseInt(value)));
@@ -71,14 +72,17 @@ public class BackupCommand {
         if (configOption != null) {
             if (configOption.type == boolean.class) {
                 return SharedSuggestionProvider.suggest(new String[]{"true", "false"}, builder);
-            } else if (option.equals("retention_mode")) {
-                return SharedSuggestionProvider.suggest(new String[]{"MAX_BACKUPS", "TIERED"}, builder);
-            } else if (option.equals("logging_level")) {
-                return SharedSuggestionProvider.suggest(new String[]{"DEBUG", "INFO", "WARN", "ERROR"}, builder);
-            } else if (option.equals("backup_format")) {
-                return SharedSuggestionProvider.suggest(Arrays.stream(Format.values()).map(Enum::name), builder);
-            } else if (option.equals("notification_mode")) {
-                return SharedSuggestionProvider.suggest(Arrays.stream(NotificationMode.values()).map(Enum::name), builder);
+            } else if (configOption.type.isEnum()) {
+                return SharedSuggestionProvider.suggest(Arrays.stream(configOption.type.getEnumConstants()).map(Object::toString), builder);
+            } else if (configOption.type == List.class) {
+                ConfigData config = Config.getConfigData();
+                List<String> currentList = (List<String>) configOption.getter.apply(config);
+                List<String> suggestions = new ArrayList<>();
+                suggestions.add("add ");
+                for (String item : currentList) {
+                    suggestions.add("remove " + item);
+                }
+                return SharedSuggestionProvider.suggest(suggestions, builder);
             }
         }
         return SharedSuggestionProvider.suggest(new String[0], builder);
@@ -113,6 +117,8 @@ public class BackupCommand {
                         )
                         .then(Commands.literal("reload")
                                 .executes(BackupCommand::reloadConfig))
+                        .then(Commands.literal("help")
+                                .executes(BackupCommand::configHelp))
                 );
     }
 
@@ -303,6 +309,9 @@ public class BackupCommand {
                     option.setter.accept(config, String.valueOf(longValue));
                 } else if (option.type == String.class) {
                     option.setter.accept(config, valueStr);
+                } else if (option.type == LoggingLevel.class) {
+                    LoggingLevel logging = LoggingLevel.valueOf(valueStr.toUpperCase());
+                    option.setter.accept(config, logging.name());
                 } else if (option.type == NotificationMode.class) {
                     NotificationMode notify = NotificationMode.valueOf(valueStr.toUpperCase());
                     option.setter.accept(config, notify.name());
@@ -316,7 +325,8 @@ public class BackupCommand {
                     context.getSource().sendFailure(Component.literal("Unsupported config type for " + optionName));
                     return 0;
                 }
-                context.getSource().sendSuccess(() -> Component.literal("Set " + optionName + " to " + valueStr), false);
+                context.getSource().sendSuccess(() -> Component.literal("Set " + optionName + " to " + valueStr),
+                        false);
             }
 
             // Save the updated configuration
@@ -328,11 +338,10 @@ public class BackupCommand {
                 FTBBackups.updateBackupSchedule(valueStr);
             }
             if (optionName.equals("logging_level")) {
-                String newLevel = config.logging_level;
-                FTBBackups.setLoggerLevel(FTBBackups.LOGGER, newLevel);
-                FTBBackups.setLoggerLevel(FTBBackups.backupCleanerLogger, newLevel);
-                FTBBackups.setLoggerLevel(FTBBackups.backupExecutorLogger, newLevel);
-                FTBBackups.setLoggerLevel(FTBBackups.statusMonitorLogger, newLevel);
+                FTBBackups.setLoggerLevel(FTBBackups.LOGGER, config.logging_level);
+                FTBBackups.setLoggerLevel(FTBBackups.backupCleanerLogger, config.logging_level);
+                FTBBackups.setLoggerLevel(FTBBackups.backupExecutorLogger, config.logging_level);
+                FTBBackups.setLoggerLevel(FTBBackups.statusMonitorLogger, config.logging_level);
             }
         } catch (NumberFormatException e) {
             context.getSource()
@@ -345,6 +354,17 @@ public class BackupCommand {
             context.getSource().sendFailure(Component.literal("Failed to set " + optionName + ": " + e.getMessage()));
             return 0;
         }
+        return 1;
+    }
+    
+    private static int configHelp(CommandContext<CommandSourceStack> context) {
+        String helpMessage = "To set a configuration option, use: /backup config set <option> <value>\n" +
+                "For list-type options like additional_paths and excluded_paths:\n" +
+                "- Use 'add <item>' to add an item to the list.\n" +
+                "- Use 'remove <item>' to remove an item from the list.\n" +
+                "- Use '<item1>,<item2>,...' to set the entire list.\n" +
+                "For other options, simply provide the new value.";
+        context.getSource().sendSuccess(() -> Component.literal(helpMessage), false);
         return 1;
     }
 
