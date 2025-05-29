@@ -44,6 +44,7 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Calendar;
 import java.util.Comparator;
@@ -153,7 +154,7 @@ public class BackupHandler {
 
     /**
      * Generates a preview image for the backup if enabled in the configuration.
-     * Returns an empty string if 'enable_preview' is false, 'preview_dimension' is "none", or generation fails.
+     * Returns an empty string if 'enable_preview' is false or generation fails.
      *
      * @param minecraftServer The Minecraft server instance.
      * @return A base64-encoded string of the preview image or an empty string if disabled or failed.
@@ -176,69 +177,40 @@ public class BackupHandler {
         FTBBackups.LOGGER.info("Starting backup preview generation...");
         long startTime = System.currentTimeMillis();
         try {
-            String previewDim = Config.getConfigData().preview_dimension;
-            FTBBackups.LOGGER.debug("Preview dimension: {}", previewDim);
-
             Path worldPath = minecraftServer.getWorldPath(LevelResource.ROOT).toAbsolutePath();
             FTBBackups.LOGGER.debug("Loading world from path: {}", worldPath);
             PREVIEW.loadWorld(worldPath);
             LevelIO levelIO = PREVIEW.getLevelIO();
             FTBBackups.LOGGER.debug("LevelIO initialized.");
 
-            CaptureArea area;
-            if ("all".equals(previewDim)) {
-                FTBBackups.LOGGER.debug("Scanning dimensions for activity clusters...");
-                List<ActivityScanner> scanners = new ArrayList<>();
-                List<String> dimensionsToScan = Config.getConfigData().preview_dimensions_list;
-                if (dimensionsToScan.isEmpty()) {
-                    FTBBackups.LOGGER.debug("No specific dimensions listed, scanning all available dimensions.");
-                    for (Level level : levelIO.getLevels()) {
-                        ActivityScanner scanner = new ActivityScanner(levelIO, level, 1);
-                        if (scanner.findActivityClusters(512, 512, 1)) {
-                            scanners.add(scanner);
-                        }
+            // Get dimensions to scan
+            List<String> dimensionsToScan = getDimensionsToScan();
+            FTBBackups.LOGGER.debug("Dimensions to scan: {}", dimensionsToScan);
+
+            // Scan each dimension for activity clusters
+            List<ActivityScanner> scanners = new ArrayList<>();
+            for (String dim : dimensionsToScan) {
+                Level level = levelIO.getLevel(dim);
+                if (level != null) {
+                    ActivityScanner scanner = new ActivityScanner(levelIO, level, 1);
+                    if (scanner.findActivityClusters(512, 512, 1)) {
+                        scanners.add(scanner);
                     }
                 } else {
-                    for (String dim : dimensionsToScan) {
-                        Level level = levelIO.getLevel(dim);
-                        if (level != null) {
-                            ActivityScanner scanner = new ActivityScanner(levelIO, level, 1);
-                            if (scanner.findActivityClusters(512, 512, 1)) {
-                                scanners.add(scanner);
-                            }
-                        } else {
-                            FTBBackups.LOGGER.warn("Dimension {} not found, skipping.", dim);
-                        }
-                    }
+                    FTBBackups.LOGGER.warn("Dimension {} not found, skipping.", dim);
                 }
-
-                if (scanners.isEmpty()) {
-                    FTBBackups.LOGGER.warn("No activity clusters found for preview.");
-                    return "";
-                }
-
-                scanners.sort(Comparator.comparingDouble(ActivityScanner::getTotalHabitationFactor).reversed());
-                ActivityScanner scanner = scanners.get(0);
-                area = scanner.getResults().get(0);
-                FTBBackups.LOGGER.debug("Selected highest habitation factor cluster from dimension.");
-            } else {
-                Level level = levelIO.getLevel(previewDim);
-                if (level == null) {
-                    FTBBackups.LOGGER.error("Specified dimension {} not found, falling back to overworld.", previewDim);
-                    level = levelIO.getLevel("minecraft:overworld");
-                    if (level == null) {
-                        FTBBackups.LOGGER.warn("Overworld dimension not found, skipping preview.");
-                        return "";
-                    }
-                }
-                ActivityScanner scanner = new ActivityScanner(levelIO, level, 1);
-                if (!scanner.findActivityClusters(512, 512, 1)) {
-                    FTBBackups.LOGGER.warn("No activity clusters found in dimension {}.", previewDim);
-                    return "";
-                }
-                area = scanner.getResults().get(0);
-                FTBBackups.LOGGER.debug("Activity cluster found in dimension: {}", previewDim);
             }
+
+            if (scanners.isEmpty()) {
+                FTBBackups.LOGGER.warn("No activity clusters found for preview.");
+                return "";
+            }
+
+            // Select the dimension with the highest habitation factor
+            scanners.sort(Comparator.comparingDouble(ActivityScanner::getTotalHabitationFactor).reversed());
+            ActivityScanner scanner = scanners.get(0);
+            CaptureArea area = scanner.getResults().get(0);
+            FTBBackups.LOGGER.debug("Selected highest habitation factor cluster.");
 
             long captureStart = System.currentTimeMillis();
             SimplePNG.SimpleImg capture = PREVIEW.newCapture()
@@ -274,29 +246,27 @@ public class BackupHandler {
 
     /**
      * Calculates a hash representing the state of region files for specified dimensions.
-     * 
+     *
      * @param minecraftServer The server instance to access world data.
      * @return A hexadecimal string of the SHA-256 hash, or an empty string if an error occurs.
      */
     private static String calculateWorldHash(MinecraftServer minecraftServer) {
-        String previewDim = Config.getConfigData().preview_dimension;
-        List<ResourceLocation> dimensionsToHash = new ArrayList<>();
+        // Get dimensions to scan
+        List<String> dimensionsToScan = getDimensionsToScan();
+        FTBBackups.LOGGER.debug("Dimensions to hash: {}", dimensionsToScan);
 
-        // Determine which dimensions to hash
-        if (!"all".equals(previewDim)) {
-            ResourceLocation dimLocation = parseDimensionString(previewDim);
-            if (dimLocation != null) {
-                dimensionsToHash.add(dimLocation);
+        // Parse dimensions into ResourceLocation and sort for consistency
+        List<ResourceLocation> dimensionsToHash = new ArrayList<>();
+        for (String dim : dimensionsToScan) {
+            ResourceLocation loc = parseDimensionString(dim);
+            if (loc != null) {
+                dimensionsToHash.add(loc);
             } else {
-                FTBBackups.LOGGER.warn("Invalid preview_dimension: {}, falling back to overworld", previewDim);
-                dimensionsToHash.add(ResourceLocation.fromNamespaceAndPath("minecraft", "overworld"));
+                FTBBackups.LOGGER.warn("Invalid dimension name: {}, skipping", dim);
             }
-        } else {
-            for (ServerLevel level : minecraftServer.getAllLevels()) {
-                dimensionsToHash.add(level.dimension().location());
-            }
-            dimensionsToHash.sort(Comparator.comparing(ResourceLocation::toString)); // Ensure consistent order
         }
+        dimensionsToHash.sort(Comparator.comparing(ResourceLocation::toString));
+        FTBBackups.LOGGER.debug("Sorted dimensions to hash: {}", dimensionsToHash);
 
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
@@ -312,8 +282,7 @@ public class BackupHandler {
                         for (Path file : regionFiles) {
                             long size = Files.size(file);
                             long lastModified = Files.getLastModifiedTime(file).toMillis();
-                            String fileInfo = dim.toString() + ":" + file.getFileName().toString() + ":" + size + ":"
-                                    + lastModified;
+                            String fileInfo = dim.toString() + ":" + file.getFileName().toString() + ":" + size + ":" + lastModified;
                             digest.update(fileInfo.getBytes());
                         }
                     }
@@ -325,6 +294,21 @@ public class BackupHandler {
             FTBBackups.LOGGER.warn("Error calculating world hash", e);
             return "";
         }
+    }
+
+    /**
+    * Retrieves the list of dimensions to scan from the configuration.
+    * If the list is empty, defaults to ["minecraft:overworld"] and logs a warning.
+    *
+    * @return A list of dimension strings to scan.
+    */
+    private static List<String> getDimensionsToScan() {
+        List<String> dimensions = Config.getConfigData().preview_dimensions_list;
+        if (dimensions.isEmpty()) {
+            FTBBackups.LOGGER.warn("preview_dimensions_list is empty, defaulting to minecraft:overworld");
+            return Arrays.asList("minecraft:overworld");
+        }
+        return dimensions;
     }
 
     /**

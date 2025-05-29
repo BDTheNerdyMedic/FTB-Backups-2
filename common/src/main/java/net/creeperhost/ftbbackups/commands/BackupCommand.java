@@ -61,7 +61,6 @@ public class BackupCommand {
         CONFIG_OPTIONS.put("free_space_if_needed", new ConfigOption<>("free_space_if_needed", boolean.class, config -> config.free_space_if_needed, (config, value) -> config.free_space_if_needed = Boolean.parseBoolean(value)));
         CONFIG_OPTIONS.put("remove_incomplete_backups", new ConfigOption<>("remove_incomplete_backups", boolean.class, config -> config.remove_incomplete_backups, (config, value) -> config.remove_incomplete_backups = Boolean.parseBoolean(value)));
         CONFIG_OPTIONS.put("enable_preview", new ConfigOption<>("enable_preview", boolean.class, config -> config.enable_preview, (config, value) -> config.enable_preview = Boolean.parseBoolean(value)));
-        CONFIG_OPTIONS.put("preview_dimension", new ConfigOption<>("preview_dimension", String.class, config -> config.preview_dimension, (config, value) -> config.preview_dimension = value));
         CONFIG_OPTIONS.put("preview_dimensions_list", new ConfigOption<>("preview_dimensions_list", List.class, config -> config.preview_dimensions_list, (config, value) -> config.preview_dimensions_list = Arrays.asList(value.split(","))));
     }
 

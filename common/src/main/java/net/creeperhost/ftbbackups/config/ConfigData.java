@@ -2,6 +2,7 @@ package net.creeperhost.ftbbackups.config;
 
 import blue.endless.jankson.Comment;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 public class ConfigData {
@@ -192,18 +193,11 @@ public class ConfigData {
   public boolean enable_preview = true;
 
   @Comment("/*\n" +
-      " * Sets the dimension for generating the backup preview image:\n" +
-      " * - Specific dimension (e.g., 'minecraft:overworld')\n" +
-      " * - 'all' to detect the primary dimension (can be slow)\n" +
-      " * Note: Use 'enable_preview' = false to disable previews.\n" +
-      " */")
-  public String preview_dimension = "minecraft:overworld";
-
-  @Comment("/*\n" +
-      " * When 'preview_dimension' is 'all', specifies which dimensions to consider. If empty, all dimensions are scanned.\n"
-      +
-      " */")
-  public List<String> preview_dimensions_list = new ArrayList<>();
+          " * List of dimensions to consider for generating the backup preview image.\n" +
+          " * If multiple dimensions are specified, the one with the highest activity will be selected.\n" +
+          " * Default: ['minecraft:overworld']\n" +
+          " */")
+  public List<String> preview_dimensions_list = Arrays.asList("minecraft:overworld");
 
   // Deprecated Options
   // ------------------

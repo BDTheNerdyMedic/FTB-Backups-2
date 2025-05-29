@@ -5,6 +5,7 @@ import blue.endless.jankson.Jankson;
 import blue.endless.jankson.JsonElement;
 import blue.endless.jankson.JsonGrammar;
 import blue.endless.jankson.JsonObject;
+import blue.endless.jankson.JsonPrimitive;
 import net.creeperhost.ftbbackups.config.ConfigData.NotificationMode;
 
 import org.apache.logging.log4j.LogManager;
@@ -18,6 +19,8 @@ import java.nio.charset.Charset;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
@@ -239,67 +242,68 @@ public class Config {
     private static void adjustDeprecatedOptions(ConfigData config) {
         try {
             JsonObject jObject = GSON.load(lastFile);
-    
-            // Map old notification options to notification_mode
-            if (jObject.containsKey("do_not_notify")) {
-                boolean doNotNotify = jObject.getBoolean("do_not_notify", false);
-                if (doNotNotify) {
-                    config.notification_mode = NotificationMode.NONE;
-                } else if (jObject.containsKey("notify_op_only")) {
-                    boolean notifyOpOnly = jObject.getBoolean("notify_op_only", true);
-                    config.notification_mode = notifyOpOnly ? NotificationMode.OPS_ONLY : NotificationMode.ALL_PLAYERS;
-                } else {
-                    config.notification_mode = NotificationMode.ALL_PLAYERS;
-                }
-                LOGGER.debug("Mapped old notification options to notification_mode: {}", config.notification_mode);
-            }
-    
-            // Existing preview_dimension adjustment
-            if ("none".equalsIgnoreCase(config.preview_dimension)) {
-                config.enable_preview = false;
-                config.preview_dimension = "minecraft:overworld";
-                LOGGER.debug(
-                        "Adjusted deprecated 'preview_dimension' from 'none' to 'minecraft:overworld' and disabled 'enable_preview'.");
-            }
+            migrateNotificationOptions(config, jObject);
+            migratePreviewDimension(config, jObject);
+            migrateListOption(config, jObject, "additional_files", config.additional_paths);
+            migrateListOption(config, jObject, "additional_directories", config.additional_paths);
+            migrateListOption(config, jObject, "excluded", config.excluded_paths);
+        } catch (IOException | SyntaxError e) {
+            LOGGER.error("Error processing config file {}: {}", lastFile.getAbsolutePath(), e.getMessage());
+        }
+    }
 
-            // Migrate additional_files to additional_paths
-            if (jObject.containsKey("additional_files")) {
-                @SuppressWarnings("unchecked")
-                List<String> files = (List<String>) jObject.get(List.class, "additional_files");
-                if (files != null) {
-                    config.additional_paths.addAll(files);
-                    LOGGER.info("Migrated 'additional_files' to 'additional_paths'");
-                }
-                jObject.remove("additional_files");
+    private static void migrateNotificationOptions(ConfigData config, JsonObject jObject) {
+        if (jObject.containsKey("do_not_notify")) {
+            boolean doNotNotify = jObject.getBoolean("do_not_notify", false);
+            if (doNotNotify) {
+                config.notification_mode = NotificationMode.NONE;
+            } else if (jObject.containsKey("notify_op_only")) {
+                config.notification_mode = jObject.getBoolean("notify_op_only", true) ? NotificationMode.OPS_ONLY
+                        : NotificationMode.ALL_PLAYERS;
+            } else {
+                config.notification_mode = NotificationMode.ALL_PLAYERS;
             }
-    
-            // Migrate additional_directories to additional_paths
-            if (jObject.containsKey("additional_directories")) {
-                @SuppressWarnings("unchecked")
-                List<String> directories = (List<String>) jObject.get(List.class, "additional_directories");
-                if (directories != null) {
-                    config.additional_paths.addAll(directories);
-                    LOGGER.info("Migrated 'additional_directories' to 'additional_paths'");
+            LOGGER.debug("Mapped old notification options to notification_mode: {}", config.notification_mode);
+            jObject.remove("do_not_notify");
+            jObject.remove("notify_op_only");
+        }
+    }
+
+    private static void migratePreviewDimension(ConfigData config, JsonObject jObject) {
+        if (jObject.containsKey("preview_dimension")) {
+            JsonElement elem = jObject.get("preview_dimension");
+            String previewDim = "";
+            if (elem instanceof JsonPrimitive) {
+                JsonPrimitive primitive = (JsonPrimitive) elem;
+                Object value = primitive.getValue();
+                if (value instanceof String) {
+                    previewDim = (String) value;
                 }
-                jObject.remove("additional_directories");
             }
-    
-            // Migrate excluded to excluded_paths
-            if (jObject.containsKey("excluded")) {
-                @SuppressWarnings("unchecked")
-                List<String> excluded = (List<String>) jObject.get(List.class, "excluded");
-                if (excluded != null) {
-                    config.excluded_paths.addAll(excluded);
-                    LOGGER.info("Migrated 'excluded' to 'excluded_paths'");
-                }
-                jObject.remove("excluded");
+            if ("all".equalsIgnoreCase(previewDim)) {
+                config.preview_dimensions_list = Arrays.asList("minecraft:overworld", "minecraft:the_nether",
+                        "minecraft:the_end");
+            } else if ("none".equalsIgnoreCase(previewDim)) {
+                config.enable_preview = false;
+                config.preview_dimensions_list = Collections.emptyList();
+            } else if (!previewDim.isEmpty()) {
+                config.preview_dimensions_list = Arrays.asList(previewDim);
             }
-        } catch (IOException e) {
-            LOGGER.error("Failed to load configuration file for deprecated option adjustment: {}", lastFile.getAbsolutePath(), e);
-            // Optionally, set default values or proceed without adjustments
-        } catch (SyntaxError e) {
-            LOGGER.error("Syntax error in configuration file: {}", lastFile.getAbsolutePath(), e);
-            // Optionally, set default values or proceed without adjustments
+            jObject.remove("preview_dimension");
+            LOGGER.info("Migrated 'preview_dimension' to 'preview_dimensions_list'");
+        }
+    }
+
+    private static void migrateListOption(ConfigData config, JsonObject jObject, String oldKey,
+            List<String> targetList) {
+        if (jObject.containsKey(oldKey)) {
+            @SuppressWarnings("unchecked")
+            List<String> oldList = (List<String>) jObject.get(List.class, oldKey);
+            if (oldList != null) {
+                targetList.addAll(oldList);
+                LOGGER.info("Migrated '{}' to target list", oldKey);
+            }
+            jObject.remove(oldKey);
         }
     }
 }
