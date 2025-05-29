@@ -2,6 +2,7 @@ package net.creeperhost.ftbbackups.config;
 
 import blue.endless.jankson.api.SyntaxError;
 import blue.endless.jankson.Jankson;
+import blue.endless.jankson.JsonArray;
 import blue.endless.jankson.JsonElement;
 import blue.endless.jankson.JsonGrammar;
 import blue.endless.jankson.JsonObject;
@@ -204,8 +205,8 @@ public class Config {
                 LOGGER.warn("No configuration data to serialize.");
                 return "{}";
             }
-            adjustDeprecatedOptions(config);
             JsonElement elem = GSON.toJson(config);
+            LOGGER.debug("Serialized JSON: {}", elem.toString());
             return elem.toJson(true, true);
         } finally {
             CONFIG_LOCK.unlock();
@@ -294,16 +295,24 @@ public class Config {
         }
     }
 
-    private static void migrateListOption(ConfigData config, JsonObject jObject, String oldKey,
-            List<String> targetList) {
+    private static void migrateListOption(ConfigData config, JsonObject jObject, String oldKey, List<String> targetList) {
         if (jObject.containsKey(oldKey)) {
-            @SuppressWarnings("unchecked")
-            List<String> oldList = (List<String>) jObject.get(List.class, oldKey);
-            if (oldList != null) {
-                targetList.addAll(oldList);
-                LOGGER.info("Migrated '{}' to target list", oldKey);
+            JsonElement oldElement = jObject.get(oldKey);
+            if (oldElement instanceof JsonArray) {
+                JsonArray oldArray = (JsonArray) oldElement;
+                for (JsonElement elem : oldArray) {
+                    if (elem instanceof JsonPrimitive) {
+                        targetList.add(((JsonPrimitive) elem).asString());
+                    } else if (elem instanceof JsonObject) {
+                        JsonObject obj = (JsonObject) elem;
+                        if (obj.containsKey("value") && obj.get("value") instanceof JsonPrimitive) {
+                            targetList.add(((JsonPrimitive) obj.get("value")).asString());
+                        }
+                    }
+                }
             }
             jObject.remove(oldKey);
+            LOGGER.info("Migrated '{}' to target list", oldKey);
         }
     }
 }
