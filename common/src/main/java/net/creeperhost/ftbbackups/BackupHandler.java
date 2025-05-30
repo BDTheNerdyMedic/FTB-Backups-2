@@ -1046,7 +1046,7 @@ public class BackupHandler {
      *
      * @param backup The backup to delete.
      */
-    private static void deleteBackup(Backup backup) {
+    public static void deleteBackup(Backup backup) {
         FTBBackups.LOGGER.debug("Attempting to delete backup: {}", backup.getBackupLocation());
         Path backupFile = Path.of(backup.getBackupLocation());
 

@@ -1,5 +1,6 @@
 package net.creeperhost.ftbbackups.commands;
 
+import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.context.CommandContext;
@@ -21,11 +22,15 @@ import net.minecraft.server.MinecraftServer;
 import org.quartz.SchedulerException;
 import org.quartz.TriggerKey;
 
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BiConsumer;
 import java.util.function.Function;
 
@@ -38,6 +43,8 @@ public class BackupCommand {
     };
 
     private static final Map<String, ConfigOption<?>> CONFIG_OPTIONS = new HashMap<>();
+    private static final ConcurrentHashMap<UUID, String> pendingDeletions = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<UUID, List<Backup>> userSnapshots = new ConcurrentHashMap<>();
 
     static {
         CONFIG_OPTIONS.put("enabled", new ConfigOption<>("enabled", boolean.class, config -> config.enabled, (config, value) -> config.enabled = Boolean.parseBoolean(value)));
@@ -119,7 +126,14 @@ public class BackupCommand {
                                 .executes(BackupCommand::reloadConfig))
                         .then(Commands.literal("help")
                                 .executes(BackupCommand::configHelp))
-                );
+                )
+                .then(Commands.literal("list")
+                        .executes(BackupCommand::listBackups))
+                        .then(Commands.literal("remove")
+                                .then(Commands.argument("index", IntegerArgumentType.integer(1))
+                                        .executes(context -> removeBackup(context, IntegerArgumentType.getInteger(context, "index")))))
+                        .then(Commands.literal("confirm")
+                                .executes(BackupCommand::confirmRemove));
     }
 
     public static int hasPerm(MinecraftServer server) {
@@ -138,7 +152,8 @@ public class BackupCommand {
             long lastBackupWithConfig = lastManualBackupTime + configTimeFromMinutes;
             if (System.currentTimeMillis() <= lastBackupWithConfig) {
                 cs.getSource().sendFailure(
-                        Component.literal("Unable to create backup, last manual backup was taken less than " + manualBackupsTime + " minutes ago"));
+                        Component.literal("Unable to create backup, last manual backup was taken less than "
+                                + manualBackupsTime + " minutes ago"));
                 return 0;
             }
         }
@@ -151,19 +166,161 @@ public class BackupCommand {
         BackupHandler.createBackup(cs.getSource().getServer(), isProtected, name);
         return 0;
     }
-
-    private static int status(CommandContext<CommandSourceStack> context) {
-        StringBuilder messageBuilder = new StringBuilder();
-        ConfigData config = Config.getConfigData();
-
-        // Display whether backups are enabled or disabled
-        if (config.enabled) {
-            messageBuilder.append("Backups Enabled\n");
-        } else {
-            messageBuilder.append("Backups Disabled\n");
+    
+    private static int listBackups(CommandContext<CommandSourceStack> context) {
+        List<Backup> backupList = new ArrayList<>(BackupHandler.backups.get().getBackups());
+        if (backupList.isEmpty()) {
+            context.getSource().sendSuccess(() -> Component.literal("No backups available."), false);
+            return 1;
         }
 
-        // Show last backup time if available
+        backupList.sort(Comparator.comparingLong(Backup::getCreateTime).reversed());
+
+        // Safely determine UUID: use player UUID if available, otherwise use a default for console
+        UUID playerUUID = (context.getSource().getPlayer() != null) 
+            ? context.getSource().getPlayer().getUUID() 
+            : new UUID(0, 0);
+        userSnapshots.put(playerUUID, new ArrayList<>(backupList));
+
+        // Header with colors
+        String header = "§fIndex. §eName §b(Created, §aSize, §dComplete, §6Protected§b)";
+        context.getSource().sendSuccess(() -> Component.literal("§6Backups:"), false);
+        context.getSource().sendSuccess(() -> Component.literal(header), false);
+        context.getSource().sendSuccess(() -> Component.literal("§7----------------------------------------"), false);
+
+        for (int i = 0; i < backupList.size(); i++) {
+            Backup backup = backupList.get(i);
+            String index = "§f" + (i + 1) + "§r";
+        String name = backup.getBackupName() != null && !backup.getBackupName().isEmpty() 
+            ? "§e" + truncate(backup.getBackupName(), 15) + "§r" 
+            : "§eUnnamed§r";
+            String created = "§b" + formatTime(backup.getCreateTime()) + "§r";
+            String size = "§a" + formatSize(backup.getSize()) + "§r";
+            String complete = backup.isComplete() ? "§dYes§r" : "§dNo§r";
+            String snapshot = backup.isProtected() ? "§6Yes§r" : "§6No§r";
+
+        String message = String.format("%s. %-15s (%s, %s, %s, %s)", index, name, created, size, complete, snapshot);
+            context.getSource().sendSuccess(() -> Component.literal(message), false);
+        }
+        return 1;
+    }
+
+    private static String truncate(String str, int length) {
+        if (str.length() <= length) {
+            return str;
+        } else {
+            return str.substring(0, length - 3) + "...";
+        }
+    }
+
+    private static String formatTime(long time) {
+        Instant instant = Instant.ofEpochMilli(time);
+        ZonedDateTime zdt = ZonedDateTime.ofInstant(instant, ZoneId.systemDefault());
+        return zdt.format(DateTimeFormatter.ofPattern("dd MMM yyyy HH:mm", Locale.ENGLISH));
+    }
+
+    private static String formatSize(long size) {
+        if (size >= 1_000_000_000) {
+            return String.format("%5.1fG", (double) size / 1_000_000_000.0); // e.g., " 1.5G"
+        } else if (size >= 1_000_000) {
+            return String.format("%3dM", size / 1_000_000); // e.g., "150M"
+        } else if (size >= 1_000) {
+            return String.format("%3dK", size / 1_000); // e.g., " 50K"
+        } else {
+            return String.format("%3dB", size); // e.g., "500B"
+        }
+    }
+
+    private static int removeBackup(CommandContext<CommandSourceStack> context, int index) {
+        UUID playerUUID = (context.getSource().getPlayer() != null) 
+            ? context.getSource().getPlayer().getUUID() 
+            : new UUID(0, 0);
+        List<Backup> snapshot = userSnapshots.get(playerUUID);
+        if (snapshot == null || index < 1 || index > snapshot.size()) {
+            context.getSource().sendFailure(Component.literal("Invalid backup index: " + index + ". Please run '/backup list' first."));
+            return 0;
+        }
+
+        Backup backup = snapshot.get(index - 1);
+        String uniqueId = generateUniqueId(backup);
+        pendingDeletions.put(playerUUID, uniqueId);
+
+        // Schedule timeout for pending deletion
+        FTBBackups.statusMonitorExecutorService.schedule(() -> {
+            pendingDeletions.remove(playerUUID);
+        }, 60, TimeUnit.SECONDS);
+
+        // Send confirmation message
+        String message = String.format(
+                "§cYou are about to remove backup §f%d§r: §e%s§r\n" +
+                        "§bCreated: %s§r\n" +
+                        "§aSize: %s§r\n" +
+                        "§dComplete: %s§r\n" +
+                        "§6Protected: %s§r\n" +
+                        "§cRun §e/backup confirm §cto confirm deletion.§r",
+                index, backup.getBackupName(), formatTime(backup.getCreateTime()), formatSize(backup.getSize()),
+                backup.isComplete() ? "Yes" : "No", backup.isProtected() ? "Yes" : "No");
+        context.getSource().sendSuccess(() -> Component.literal(message), false);
+        return 1;
+    }
+    
+    private static int confirmRemove(CommandContext<CommandSourceStack> context) {
+        UUID playerUUID = (context.getSource().getPlayer() != null) 
+            ? context.getSource().getPlayer().getUUID() 
+            : new UUID(0, 0);
+        String uniqueId = pendingDeletions.remove(playerUUID);
+        if (uniqueId == null) {
+            context.getSource().sendFailure(Component.literal("No pending deletion to confirm."));
+            return 0;
+        }
+    
+        List<Backup> backupList = BackupHandler.backups.get().getBackups();
+        Optional<Backup> backupOpt = backupList.stream()
+            .filter(b -> generateUniqueId(b).equals(uniqueId))
+            .findFirst();
+    
+        if (backupOpt.isPresent()) {
+            BackupHandler.deleteBackup(backupOpt.get());
+            context.getSource().sendSuccess(() -> Component.literal("Backup removed successfully."), false);
+            FTBBackups.LOGGER.info("Player {} removed backup with ID: {}", 
+                context.getSource().getPlayer() != null ? context.getSource().getPlayer().getName().getString() : "Console", 
+                uniqueId);
+        } else {
+            context.getSource().sendFailure(Component.literal("Backup not found."));
+        }
+        return 1;
+    }
+
+    private static String generateUniqueId(Backup backup) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-1");
+
+            String data = backup.getCreateTime() + backup.getBackupLocation() +
+                    backup.getSize() + backup.getSha1();
+
+            byte[] hashBytes = digest.digest(data.getBytes());
+
+            StringBuilder hexString = new StringBuilder();
+            for (byte b : hashBytes) {
+                String hex = Integer.toHexString(0xff & b);
+                if (hex.length() == 1)
+                    hexString.append('0');
+                hexString.append(hex);
+            }
+
+            return hexString.toString();
+        } catch (NoSuchAlgorithmException e) {
+            throw new RuntimeException("SHA-1 algorithm not found", e);
+        }
+    }
+
+    private static int status(CommandContext<CommandSourceStack> context) {
+        ConfigData config = Config.getConfigData();
+        StringBuilder messageBuilder = new StringBuilder();
+    
+        messageBuilder.append(config.enabled ? "§aBackups Enabled§r\n" : "§cBackups Disabled§r\n");
+    
+        // Last backup time
         Backup latestBackup = BackupHandler.getLatestBackup();
         if (latestBackup != null) {
             long createTime = latestBackup.getCreateTime();
@@ -172,34 +329,32 @@ public class BackupCommand {
             String formattedTime = zdt.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
             long timeSince = System.currentTimeMillis() - createTime;
             String timeSinceStr = formatDuration(timeSince);
-            messageBuilder.append("Last backup: ").append(formattedTime).append(" (").append(timeSinceStr)
-                    .append(" ago)\n");
+            messageBuilder.append("§eLast backup:§r ").append(formattedTime).append(" §7(").append(timeSinceStr).append(" ago)§r\n");
         } else {
-            messageBuilder.append("No backups available\n");
+            messageBuilder.append("§cNo backups available§r\n");
         }
-
-        // Show next backup time only if backups are enabled
+    
+        // Next backup time (if enabled)
         if (config.enabled) {
             try {
-                Date nextFireTime = FTBBackups.scheduler.getTrigger(TriggerKey.triggerKey(FTBBackups.MOD_ID))
-                        .getNextFireTime();
+                Date nextFireTime = FTBBackups.scheduler.getTrigger(TriggerKey.triggerKey(FTBBackups.MOD_ID)).getNextFireTime();
                 if (nextFireTime != null) {
                     long timeUntil = nextFireTime.getTime() - System.currentTimeMillis();
                     String timeUntilStr = timeUntil > 0 ? "in " + formatDuration(timeUntil) : "now";
-                    messageBuilder.append("Next backup: ").append(timeUntilStr).append("\n");
+                    messageBuilder.append("§eNext backup:§r ").append(timeUntilStr).append("\n");
                 } else {
-                    messageBuilder.append("No scheduled backups\n");
+                    messageBuilder.append("§cNo scheduled backups§r\n");
                 }
             } catch (SchedulerException e) {
-                messageBuilder.append("Error retrieving next backup time\n");
+                messageBuilder.append("§cError retrieving next backup time§r\n");
             }
-            // Show dirty status if only_if_players_been_online is true
+            // Dirty status
             if (config.only_if_players_been_online) {
                 boolean isDirty = BackupHandler.isDirty();
-                messageBuilder.append("Server marked for backup: ").append(isDirty).append("\n");
+                messageBuilder.append("§eServer marked for backup:§r ").append(isDirty ? "§aYes§r" : "§cNo§r").append("\n");
             }
         }
-
+    
         context.getSource().sendSuccess(() -> Component.literal(messageBuilder.toString()), false);
         return 0;
     }
@@ -232,7 +387,7 @@ public class BackupCommand {
         } else {
             valueStr = value.toString();
         }
-        context.getSource().sendSuccess(() -> Component.literal(option.name + ": " + valueStr), false);
+        context.getSource().sendSuccess(() -> Component.literal(optionName + ": " + valueStr), false);
         return 1;
     }
 
@@ -262,21 +417,18 @@ public class BackupCommand {
                     }
                     currentList.add(value.trim());
                     option.setter.accept(config, String.join(",", currentList));
-                    context.getSource().sendSuccess(() -> Component.literal("Added " + value + " to " + optionName),
-                            false);
+                    context.getSource().sendSuccess(() -> Component.literal("Added " + value + " to " + optionName), false);
                 } else if (action.equals("remove")) {
                     if (value.isEmpty()) {
                         context.getSource().sendFailure(Component.literal("No value provided to remove."));
                         return 0;
                     }
                     if (!currentList.remove(value.trim())) {
-                        context.getSource()
-                                .sendFailure(Component.literal("Value not found in " + optionName + ": " + value));
+                        context.getSource().sendFailure(Component.literal("Value not found in " + optionName + ": " + value));
                         return 0;
                     }
                     option.setter.accept(config, String.join(",", currentList));
-                    context.getSource().sendSuccess(() -> Component.literal("Removed " + value + " from " + optionName),
-                            false);
+                    context.getSource().sendSuccess(() -> Component.literal("Removed " + value + " from " + optionName), false);
                 } else {
                     // Treat the entire valueStr as a comma-separated list
                     String[] items = valueStr.split(",");
@@ -288,16 +440,14 @@ public class BackupCommand {
                         }
                     }
                     option.setter.accept(config, String.join(",", newList));
-                    context.getSource().sendSuccess(
-                            () -> Component.literal("Set " + optionName + " to " + String.join(", ", newList)), false);
+                    context.getSource().sendSuccess(() -> Component.literal("Set " + optionName + " to " + String.join(", ", newList)), false);
                 }
             } else {
                 // Handle non-list options as before
                 if (option.type == boolean.class) {
                     String lowerValue = valueStr.toLowerCase();
                     if (!lowerValue.equals("true") && !lowerValue.equals("false")) {
-                        context.getSource().sendFailure(
-                                Component.literal("Invalid boolean value: " + valueStr + ". Use 'true' or 'false'."));
+                        context.getSource().sendFailure(Component.literal("Invalid boolean value: " + valueStr + ". Use 'true' or 'false'."));
                         return 0;
                     }
                     option.setter.accept(config, lowerValue);
@@ -325,8 +475,7 @@ public class BackupCommand {
                     context.getSource().sendFailure(Component.literal("Unsupported config type for " + optionName));
                     return 0;
                 }
-                context.getSource().sendSuccess(() -> Component.literal("Set " + optionName + " to " + valueStr),
-                        false);
+                context.getSource().sendSuccess(() -> Component.literal("Set " + optionName + " to " + valueStr), false);
             }
 
             // Save the updated configuration
@@ -344,8 +493,7 @@ public class BackupCommand {
                 FTBBackups.setLoggerLevel(FTBBackups.statusMonitorLogger, config.logging_level);
             }
         } catch (NumberFormatException e) {
-            context.getSource()
-                    .sendFailure(Component.literal("Invalid number format for " + optionName + ": " + valueStr));
+            context.getSource().sendFailure(Component.literal("Invalid number format for " + optionName + ": " + valueStr));
             return 0;
         } catch (IllegalArgumentException e) {
             context.getSource().sendFailure(Component.literal("Invalid value for " + optionName + ": " + valueStr));
@@ -382,8 +530,7 @@ public class BackupCommand {
                 context.getSource().sendSuccess(() -> Component.literal("Configuration reloaded and updated."), false);
                 return 1;
             case UNCHANGED:
-                context.getSource().sendSuccess(() -> Component.literal("Configuration reloaded, no changes detected."),
-                        false);
+                context.getSource().sendSuccess(() -> Component.literal("Configuration reloaded, no changes detected."), false);
                 return 1;
             case FAILED:
                 context.getSource().sendFailure(Component.literal("Failed to reload configuration."));
