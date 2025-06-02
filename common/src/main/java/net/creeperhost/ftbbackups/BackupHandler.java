@@ -565,17 +565,17 @@ public class BackupHandler {
                 List<Path> paths = pathStream.toList();
                 for (Path path : paths) {
                     Path relFile = serverRoot.relativize(path);
-                    if (FileUtils.matchesAny(relFile, additionalPaths)
-                            && !FileUtils.matchesAny(relFile, excludedPatterns)) {
-                        if (!FileUtils.isChildOf(path, serverRoot)) {
+                    if (FileUtils.doesFilterExcludePath(relFile, additionalPaths)
+                            && !FileUtils.doesFilterExcludePath(relFile, excludedPatterns)) {
+                        if (!FileUtils.isSubPathOf(path, serverRoot)) {
                             FTBBackups.LOGGER.warn("Ignoring path {}: not a child of server root.", relFile);
                             continue;
                         }
-                        if (FileUtils.isChildOf(path, worldFolder)) {
+                        if (FileUtils.isSubPathOf(path, worldFolder)) {
                             FTBBackups.LOGGER.debug("Skipping path {}: already included in world folder.", relFile);
                             continue;
                         }
-                        if (FileUtils.isChildOf(path, backupFolderPath)) {
+                        if (FileUtils.isSubPathOf(path, backupFolderPath)) {
                             FTBBackups.LOGGER.warn("Ignoring path {}: child of backups folder.", relFile);
                             continue;
                         }
@@ -601,7 +601,7 @@ public class BackupHandler {
         FTBBackups.LOGGER.info("Starting backup operation with format: {}", format);
         try {
             if (format == Format.DIRECTORY) {
-                FileUtils.copy(backupPath, serverRoot, backupPaths);
+                FileUtils.copySourcePathsToDirectory(backupPath, serverRoot, backupPaths);
                 if (!Files.exists(backupPath)) {
                     FTBBackups.LOGGER.error("Backup directory was not created: {}", backupPath);
                     throw new IOException("Backup directory was not created");
@@ -609,7 +609,7 @@ public class BackupHandler {
                     FTBBackups.LOGGER.debug("Directory backup completed.");
                 }
             } else {
-                FileUtils.compress(backupPath, serverRoot, backupPaths, format);
+                FileUtils.compressSourcePathsToArchive(backupPath, serverRoot, backupPaths, format);
                 if (!Files.exists(backupPath)) {
                     FTBBackups.LOGGER.error("Backup file was not created: {}", backupPath);
                     throw new IOException("Backup file was not created");
@@ -652,13 +652,13 @@ public class BackupHandler {
         float ratio = 1;
 
         if (Files.exists(backupLocation)) {
-            backupSize = FileUtils.getSize(backupLocation.toFile());
+            backupSize = FileUtils.getFolderSize(backupLocation);
             if (format != Format.DIRECTORY) {
-                sha1 = FileUtils.getFileSha1(backupLocation);
+                sha1 = FileUtils.generateFileSha1(backupLocation);
                 ratio = (float) backupSize / (float) FileUtils.getFolderSize(worldFolder);
                 FTBBackups.LOGGER.debug("Calculated compression ratio: {}", ratio);
             } else {
-                sha1 = FileUtils.getDirectorySha1(backupLocation);
+                sha1 = FileUtils.generateDirectorySha1(backupLocation);
             }
         } else {
             FTBBackups.LOGGER.error("Backup file does not exist: {}", backupLocation);
@@ -668,8 +668,8 @@ public class BackupHandler {
             return;
         }
 
-        FTBBackups.LOGGER.debug("Backup size: {}, World size: {}", FileUtils.getSizeString(backupSize),
-                FileUtils.getSizeString(FileUtils.getFolderSize(worldFolder)));
+        FTBBackups.LOGGER.debug("Backup size: {}, World size: {}", FileUtils.convertSizeToReadableString((double) backupSize),
+                FileUtils.convertSizeToReadableString((double) FileUtils.getFolderSize(worldFolder)));
         synchronized (BACKUP_LOCK) {
             backup.setRatio(ratio).setSha1(sha1).setComplete();
             backup.setSize(backupSize);
@@ -682,11 +682,11 @@ public class BackupHandler {
         backupRunning.set(false);
 
         if (Config.getConfigData().notification_mode != ConfigData.NotificationMode.NONE) {
-            String msg = "Backup finished in " + format(elapsedTime) + " Size: " + FileUtils.getSizeString(backupSize);
+            String msg = "Backup finished in " + format(elapsedTime) + " Size: " + FileUtils.convertSizeToReadableString((double) backupSize);
             alertPlayers(minecraftServer, Component.translatable(msg));
         }
         FTBBackups.LOGGER.info("New backup created at {} size: {} Took: {} Sha1: {}", backupLocation,
-                FileUtils.getSizeString(backupSize), format(elapsedTime), sha1);
+                FileUtils.convertSizeToReadableString((double) backupSize), format(elapsedTime), sha1);
 
         TieredBackupTest.testBackupCount++;
     }
@@ -1192,22 +1192,22 @@ public class BackupHandler {
         if (latestBackup == null) {
             if (currentWorldSize > free) {
                 FTBBackups.LOGGER.error("Insufficient space for backup. World size: {}, Available: {}",
-                        FileUtils.getSizeString(currentWorldSize), FileUtils.getSizeString(free));
+                        FileUtils.convertSizeToReadableString((double) currentWorldSize), FileUtils.convertSizeToReadableString((double) free));
                 failReason = "not enough free space on device";
                 isSpaceConstrained = true;
                 return false;
             } else {
                 expectedSize = currentWorldSize;
                 FTBBackups.LOGGER.info("No previous backup. World size: {}, Available: {}",
-                        FileUtils.getSizeString(currentWorldSize), FileUtils.getSizeString(free));
+                        FileUtils.convertSizeToReadableString((double) currentWorldSize), FileUtils.convertSizeToReadableString((double) free));
             }
         } else {
             long latestBackupSize = latestBackup.getSize();
             float ratio = latestBackup.getRatio();
             expectedSize = (long) (Math.ceil(currentWorldSize * ratio) * 1.05);
             FTBBackups.LOGGER.info("Last backup size: {}, World size: {}, Available: {}, Expected: {}",
-                    FileUtils.getSizeString(latestBackupSize), FileUtils.getSizeString(currentWorldSize),
-                    FileUtils.getSizeString(free), FileUtils.getSizeString(expectedSize));
+                    FileUtils.convertSizeToReadableString((double) latestBackupSize), FileUtils.convertSizeToReadableString((double) currentWorldSize),
+                    FileUtils.convertSizeToReadableString((double) free), FileUtils.convertSizeToReadableString((double) expectedSize));
             if (expectedSize > free) {
                 failReason = "not enough free space on device";
                 isSpaceConstrained = true;
@@ -1373,7 +1373,7 @@ public class BackupHandler {
                 long currentSize = getCurrentBackupSize(backupPath, format);
                 int percentage = calculatePercentage(currentSize, expectedSize);
                 FTBBackups.statusMonitorLogger.info("Backup in progress: {}% complete, Current size: {}", percentage,
-                        FileUtils.getSizeString(currentSize));
+                        FileUtils.convertSizeToReadableString((double) currentSize));
                 scheduleStatusCheck(backupPath, format, expectedSize, 30, TimeUnit.SECONDS);
             } else {
                 FTBBackups.statusMonitorLogger.debug("Backup not running, status check ended.");
@@ -1389,17 +1389,9 @@ public class BackupHandler {
      * @return The current size of the backup.
      */
     private static long getCurrentBackupSize(Path backupPath, Format format) {
-        // FTBBackups.LOGGER.debug("Calculating current backup size for: {}", backupPath);
         try {
-            long size;
-            if (format == Format.DIRECTORY) {
-                size = FileUtils.getFolderSize(backupPath);
-            } else {
-                size = Files.size(backupPath);
-            }
-            // FTBBackups.LOGGER.debug("Current backup size: {}", FileUtils.getSizeString(size));
-            return size;
-        } catch (IOException e) {
+            return FileUtils.getFolderSize(backupPath);
+        } catch (Exception e) {
             FTBBackups.LOGGER.warn("Failed to get current backup size", e);
             return 0;
         }
@@ -1427,7 +1419,7 @@ public class BackupHandler {
     // Helper method to check if a path is a child of any path in a list
     private static boolean isChildOfAny(Path path, List<Path> parents) {
         for (Path parent : parents) {
-            if (FileUtils.isChildOf(path, parent)) {
+            if (FileUtils.isSubPathOf(path, parent)) {
                 return true;
             }
         }
