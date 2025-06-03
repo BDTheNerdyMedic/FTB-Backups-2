@@ -72,6 +72,7 @@ public class BackupHandler {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create();
     private static final LevelPreview PREVIEW = new LevelPreview(new MCNBTImpl());
     public static String lastPreview = "";
+    public static String currentBackupId;
 
     private static Path serverRoot;
     private static Path backupFolderPath;
@@ -97,11 +98,11 @@ public class BackupHandler {
      * @param minecraftServer The Minecraft server instance.
      */
     public static void init(MinecraftServer minecraftServer) {
-        FTBBackups.LOGGER.info("Initializing BackupHandler...");
+        FTBBackups.LOGGER.info("[BackupHandler] Initializing backup system...");
         serverRoot = minecraftServer.getServerDirectory().normalize().toAbsolutePath();
         defaultBackupLocation = serverRoot.resolve("backups");
 
-        FTBBackups.LOGGER.debug("Server root set to: {}", serverRoot);
+        FTBBackups.LOGGER.debug("[BackupHandler] Setting server root to: {}", serverRoot);
         FTBBackups.LOGGER.debug("Default backup location set to: {}", defaultBackupLocation);
 
         if (!Config.getConfigData().backup_location.equalsIgnoreCase(".")) {
@@ -111,8 +112,7 @@ public class BackupHandler {
                     FTBBackups.LOGGER.info("Using configured backups directory at {}", configPath.toAbsolutePath());
                     backupFolderPath = configPath;
                 } else {
-                    FTBBackups.LOGGER.error("Backup directory {} does not exist. Defaulting to {}",
-                            configPath.toAbsolutePath(), defaultBackupLocation);
+                    FTBBackups.LOGGER.error("[BackupHandler] Backup directory {} not found, falling back to default: {}", configPath.toAbsolutePath(), defaultBackupLocation);
                     backupFolderPath = defaultBackupLocation;
                 }
             } catch (Exception e) {
@@ -382,42 +382,52 @@ public class BackupHandler {
      * @param name            The name of the backup.
      */
     public static void createBackup(MinecraftServer minecraftServer, boolean protect, String name) {
-        FTBBackups.LOGGER.info("Starting backup process for '{}'", name);
+        currentBackupId = "Backup-" + System.currentTimeMillis();
+        FTBBackups.LOGGER.info("[{}] Starting backup '{}'", currentBackupId, name);
         worldFolder = minecraftServer.getWorldPath(LevelResource.ROOT).toAbsolutePath();
-        if (shouldSkipBackup(minecraftServer)) {
-            FTBBackups.LOGGER.info("Backup skipped due to conditions.");
+
+        // Step 1: Check if backup should be skipped due to non-resource conditions
+        BackupFeasibility skipFeasibility = shouldSkipBackup();
+        if (!skipFeasibility.canCreate) {
+            String fullFailMessage = "Backup skipped, Reason: " + skipFeasibility.failMessage;
+            alertPlayers(minecraftServer, Component.translatable(fullFailMessage));
+            logFeasibilityMessage(skipFeasibility, fullFailMessage);
+            backupRunning.set(false);
             return;
         }
 
+        // Step 2: Check if backup can be created based on resource availability
+        BackupFeasibility createFeasibility = canCreateBackup();
+        if (!createFeasibility.canCreate) {
+            String fullFailMessage = "Unable to create backup, Reason: " + createFeasibility.failMessage;
+            alertPlayers(minecraftServer, Component.translatable(fullFailMessage));
+            logFeasibilityMessage(createFeasibility, fullFailMessage);
+            return;
+        }
+
+        // Step 3: Proceed with backup setup and execution
         BackupSetup setup = setupBackupEnvironment(minecraftServer, name);
-        if (setup.backupLocation == null) {
-            FTBBackups.LOGGER.warn("Backup environment setup failed.");
+        if (setup == null || setup.backupLocation == null) {
+            FTBBackups.LOGGER.error("[{}] Failed to set up backup environment", currentBackupId);
             return;
         }
 
         Format format = Config.getConfigData().backup_format;
         // Create a new Backup object with the necessary details
         Backup backup = new Backup(
-                worldFolder.normalize().getFileName().toString(), // World folder name
-                lastAutoBackup,                                   // Timestamp of the last backup
-                setup.backupLocation.toString(),                  // Backup location path
-                0, 1, "",                         // Default values for size, count, and description
-                backupPreview.get(),                              // Backup preview setting
-                protect,                                          // Protection flag
-                name,                                             // Backup name
-                format,                                           // Backup format
-                false                                    // Not a manual backup
-        );
+                worldFolder.normalize().getFileName().toString(),
+                lastAutoBackup,
+                setup.backupLocation.toString(),
+                0, 1, "",
+                backupPreview.get(),
+                protect,
+                name,
+                format,
+                false);
 
-        // Log the addition of the new backup
-        FTBBackups.LOGGER.debug("Adding new backup: {} at {}",
-                Path.of(backup.getBackupLocation()).getFileName(),
-                new Date(backup.getCreateTime()));
         synchronized (BACKUP_LOCK) {
             addBackup(backup);
             updateJson();
-            FTBBackups.LOGGER.info("Backup added and JSON updated for: {}",
-                    Path.of(backup.getBackupLocation()).getFileName());
         }
 
         AtomicLong startTime = new AtomicLong(System.nanoTime());
@@ -427,50 +437,110 @@ public class BackupHandler {
             performBackup(minecraftServer, setup.backupLocation, format, backup);
         }, FTBBackups.backupExecutor).thenRun(() -> {
             finalizeBackup(minecraftServer, backup, setup.backupLocation, format, startTime);
-            if (backup.isComplete()) {
-                FTBBackups.LOGGER.info("Backup performed successfully.");
-            } else {
-                FTBBackups.LOGGER.error("Backup failed.");
-            }
             currentFuture = null;
             clean();
         });
     }
 
     /**
-     * Determines if a backup should be skipped based on current conditions.
-     *
-     * @param minecraftServer The Minecraft server instance.
-     * @return True if the backup should be skipped, false otherwise.
-     */
-    private static boolean shouldSkipBackup(MinecraftServer minecraftServer) {
-        FTBBackups.LOGGER.debug("Checking if backup should be skipped...");
-        if (FTBBackups.isShutdown || !Config.getConfigData().enabled) {
-            FTBBackups.LOGGER.info("Skipping backup: mod is shutting down or disabled.");
-            return true;
+    * Determines if a backup should be skipped based on non-resource conditions.
+    *
+    * @return A BackupFeasibility object indicating if the backup should be skipped, with reason and log level.
+    */
+    private static BackupFeasibility shouldSkipBackup() {
+        if (FTBBackups.isShutdown) {
+            return new BackupFeasibility(false, "Mod is shutting down", ConfigData.LoggingLevel.INFO);
         }
-
-        // Skip if there are backups and no player activity since the last one (if configured)
+        if (!Config.getConfigData().enabled) {
+            return new BackupFeasibility(false, "Backups are disabled in config", ConfigData.LoggingLevel.INFO);
+        }
         if (!backups.get().getBackups().isEmpty() && Config.getConfigData().only_if_players_been_online && !isDirty()) {
-            FTBBackups.LOGGER.info("Skipping backup: no players have been online since last backup.");
-            return true;
+            return new BackupFeasibility(false, "No player activity since last backup", ConfigData.LoggingLevel.INFO);
         }
 
-        if (!canCreateBackup()) {
-            if (!failReason.isEmpty()) {
-                backupRunning.set(false);
-                String failMessage = "Unable to create backup, Reason: " + failReason;
-                alertPlayers(minecraftServer, Component.translatable(failMessage));
-                FTBBackups.LOGGER.error(failMessage);
-                failReason = "";
+        return new BackupFeasibility(true, "", ConfigData.LoggingLevel.INFO);
+    }
+
+    /**
+    * Checks if a backup can be created based on resource availability.
+    *
+    * @return A BackupFeasibility object containing the feasibility status, failure message, and logging level.
+    */
+    public static BackupFeasibility canCreateBackup() {
+        String failMessage;
+        ConfigData.LoggingLevel logLevel;
+
+        // Check world folder
+        File worldFile = worldFolder.toFile();
+        if (!worldFile.exists() || !worldFile.isDirectory()) {
+            failMessage = "Invalid world folder";
+            logLevel = ConfigData.LoggingLevel.ERROR;
+            return new BackupFeasibility(false, failMessage, logLevel);
+        }
+        if (!worldFile.canRead()) {
+            failMessage = "World folder is not readable";
+            logLevel = ConfigData.LoggingLevel.ERROR;
+            return new BackupFeasibility(false, failMessage, logLevel);
+        }
+
+        // Check backup folder
+        if (backupFolderPath == null || !backupFolderPath.toFile().exists()) {
+            failMessage = "Invalid backup folder";
+            logLevel = ConfigData.LoggingLevel.ERROR;
+            return new BackupFeasibility(false, failMessage, logLevel);
+        }
+        if (!backupFolderPath.toFile().canWrite()) {
+            failMessage = "Backup folder is not writable";
+            logLevel = ConfigData.LoggingLevel.ERROR;
+            return new BackupFeasibility(false, failMessage, logLevel);
+        }
+
+        // Check backup or thread status
+        if (backupRunning.get()) {
+            failMessage = "Backup already running";
+            logLevel = ConfigData.LoggingLevel.WARN;
+            return new BackupFeasibility(false, failMessage, logLevel);
+        }
+        if (currentFuture != null) {
+            failMessage = "Backup thread is still running";
+            logLevel = ConfigData.LoggingLevel.ERROR;
+            return new BackupFeasibility(false, failMessage, logLevel);
+        }
+
+        // Check disk space
+        long minFreeSpace = Config.getConfigData().minimum_free_space * 1000000L;
+        long free = backupFolderPath.toFile().getUsableSpace() - minFreeSpace;
+        long currentWorldSize = FileUtils.getFolderSize(worldFolder);
+        for (String p : Config.getConfigData().additional_paths) {
+            try {
+                Path path = worldFolder.getParent().resolve(p);
+                if (Files.exists(path)) {
+                    currentWorldSize += FileUtils.getFolderSize(path);
+                }
+            } catch (Exception ignored) {
             }
-            backupRunning.set(false);
-            FTBBackups.LOGGER.debug("Backup skipped due to failure conditions.");
-            return true;
         }
 
-        FTBBackups.LOGGER.debug("No conditions met to skip backup.");
-        return false;
+        Backup latestBackup = getLatestBackup();
+        if (latestBackup == null) {
+            if (currentWorldSize > free) {
+                failMessage = "Insufficient space for initial backup";
+                logLevel = ConfigData.LoggingLevel.ERROR;
+                return new BackupFeasibility(false, failMessage, logLevel);
+            }
+        } else {
+            long latestBackupSize = latestBackup.getSize();
+            float ratio = latestBackup.getRatio();
+            long expectedSize = (long) (Math.ceil(currentWorldSize * ratio) * 1.05);
+            if (expectedSize > free) {
+                failMessage = "Insufficient space for expected backup size";
+                logLevel = ConfigData.LoggingLevel.ERROR;
+                return new BackupFeasibility(false, failMessage, logLevel);
+            }
+        }
+
+        // All checks passed
+        return new BackupFeasibility(true, "", ConfigData.LoggingLevel.INFO);
     }
 
     /**
@@ -1186,85 +1256,18 @@ public class BackupHandler {
     }
 
     /**
-     * Checks if a backup can be created based on current conditions (e.g., space, running state).
-     *
-     * @return True if a backup can be created, false otherwise.
+     * Represents the feasibility of creating a backup, including the status, failure message, and logging level.
      */
-    public static boolean canCreateBackup() {
-        FTBBackups.LOGGER.debug("Checking if backup can be created...");
-        File worldFile = worldFolder.toFile();
-        if (!worldFile.exists() || !worldFile.isDirectory()) {
-            FTBBackups.LOGGER.warn("World folder does not exist or is not a directory: {}",
-                    worldFile.getAbsolutePath());
-            failReason = "Invalid world folder";
-            return false;
-        }
+    public static class BackupFeasibility {
+        public final boolean canCreate;
+        public final String failMessage;
+        public final ConfigData.LoggingLevel logLevel;
 
-        if (backupFolderPath == null) {
-            failReason = "backup folder path is null";
-            FTBBackups.LOGGER.error("Backup folder path is null.");
-            return false;
+        public BackupFeasibility(boolean canCreate, String failMessage, ConfigData.LoggingLevel logLevel) {
+            this.canCreate = canCreate;
+            this.failMessage = failMessage;
+            this.logLevel = logLevel;
         }
-        if (!backupFolderPath.toFile().exists()) {
-            failReason = "backup folder does not exist";
-            FTBBackups.LOGGER.error("Backup folder does not exist: {}", backupFolderPath);
-            return false;
-        }
-        if (backupRunning.get()) {
-            failReason = "Unable to start new backup as backup is already running";
-            FTBBackups.LOGGER.info("Backup already running, cannot start new backup.");
-            return false;
-        }
-
-        if (currentFuture != null) {
-            failReason = "backup thread is somehow still running";
-            FTBBackups.LOGGER.error("Backup thread is still running.");
-            return false;
-        }
-
-        long minFreeSpace = Config.getConfigData().minimum_free_space * 1000000L;
-        long free = backupFolderPath.toFile().getUsableSpace() - minFreeSpace;
-        long currentWorldSize = FileUtils.getFolderSize(worldFolder);
-        for (String p : Config.getConfigData().additional_paths) {
-            try {
-                Path path = worldFolder.getParent().resolve(p);
-                if (Files.exists(path)) {
-                    currentWorldSize += FileUtils.getFolderSize(path);
-                }
-            } catch (Exception ignored) {
-            }
-        }
-
-        Backup latestBackup = getLatestBackup();
-
-        if (latestBackup == null) {
-            if (currentWorldSize > free) {
-                FTBBackups.LOGGER.error("Insufficient space for backup. World size: {}, Available: {}",
-                        FileUtils.convertSizeToReadableString((double) currentWorldSize), FileUtils.convertSizeToReadableString((double) free));
-                failReason = "not enough free space on device";
-                isSpaceConstrained = true;
-                return false;
-            } else {
-                expectedSize = currentWorldSize;
-                FTBBackups.LOGGER.info("No previous backup. World size: {}, Available: {}",
-                        FileUtils.convertSizeToReadableString((double) currentWorldSize), FileUtils.convertSizeToReadableString((double) free));
-            }
-        } else {
-            long latestBackupSize = latestBackup.getSize();
-            float ratio = latestBackup.getRatio();
-            expectedSize = (long) (Math.ceil(currentWorldSize * ratio) * 1.05);
-            FTBBackups.LOGGER.info("Last backup size: {}, World size: {}, Available: {}, Expected: {}",
-                    FileUtils.convertSizeToReadableString((double) latestBackupSize), FileUtils.convertSizeToReadableString((double) currentWorldSize),
-                    FileUtils.convertSizeToReadableString((double) free), FileUtils.convertSizeToReadableString((double) expectedSize));
-            if (expectedSize > free) {
-                failReason = "not enough free space on device";
-                isSpaceConstrained = true;
-                FTBBackups.LOGGER.error("Insufficient space for expected backup size.");
-                return false;
-            }
-        }
-        FTBBackups.LOGGER.debug("Backup can be created.");
-        return true;
     }
 
     /**
@@ -1338,6 +1341,29 @@ public class BackupHandler {
                 level.noSave = value;
                 FTBBackups.LOGGER.debug("noSave set to {} for level: {}", value, level.dimension().location());
             }
+        }
+    }
+
+    /**
+    * Logs the feasibility message at the specified log level.
+    *
+    * @param feasibility The BackupFeasibility object.
+    * @param message     The message to log.
+    */
+    private static void logFeasibilityMessage(BackupFeasibility feasibility, String message) {
+        switch (feasibility.logLevel) {
+            case DEBUG:
+                FTBBackups.LOGGER.debug("[{}] {}", currentBackupId, message);
+                break;
+            case INFO:
+                FTBBackups.LOGGER.info("[{}] {}", currentBackupId, message);
+                break;
+            case WARN:
+                FTBBackups.LOGGER.warn("[{}] {}", currentBackupId, message);
+                break;
+            case ERROR:
+                FTBBackups.LOGGER.error("[{}] {}", currentBackupId, message);
+                break;
         }
     }
 
