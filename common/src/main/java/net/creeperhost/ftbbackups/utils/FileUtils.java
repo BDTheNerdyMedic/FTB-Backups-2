@@ -22,6 +22,7 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -92,15 +93,16 @@ public class FileUtils {
     }
 
     /**
-     * Compresses the specified source paths into an archive file.
-     *
-     * @param archiveFilePath the path to the archive file to create
-     * @param serverRoot the root directory of the server, used for relative paths
-     * @param sourcePaths the paths to compress
-     * @param format the format of the archive (ZIP or ZSTD)
-     * @throws IOException if an I/O error occurs during compression
-     */
+    * Compresses the specified source paths into an archive file.
+    *
+    * @param archiveFilePath the path to the archive file to create
+    * @param serverRoot the root directory of the server, used for relative paths
+    * @param sourcePaths the paths to compress
+    * @param format the format of the archive (ZIP or ZSTD)
+    * @throws IOException if an I/O error occurs during compression
+    */
     public static void compressSourcePathsToArchive(Path archiveFilePath, Path serverRoot, Iterable<Path> sourcePaths, Format format) throws IOException {
+        // Create the archive file and its parent directories
         try {
             Files.createDirectories(archiveFilePath.getParent());
             Path archivePath = Files.createFile(archiveFilePath);
@@ -116,27 +118,38 @@ public class FileUtils {
             throw e;
         }
 
+        // Track file processing statistics
         AtomicBoolean fileAdded = new AtomicBoolean(false);
         AtomicInteger totalFiles = new AtomicInteger(0);
         AtomicInteger failedFiles = new AtomicInteger(0);
 
+        // Open output streams for compression
         try (OutputStream fileOut = new BufferedOutputStream(Files.newOutputStream(archiveFilePath), 8192);
                 ZipOutputStream zipOut = format == Format.ZIP ? new ZipOutputStream(fileOut) : null;
-                TarOutputStream tarOut = format == Format.ZSTD ? new TarOutputStream(new ZstdOutputStream(fileOut))
-                        : null) {
+                TarOutputStream tarOut = format == Format.ZSTD ? new TarOutputStream(new ZstdOutputStream(fileOut)) : null) {
 
+            // Process each source path
             for (Path sourcePath : sourcePaths) {
                 if (Files.isDirectory(sourcePath)) {
+                    FTBBackups.LOGGER.debug("Starting to walk directory: {}", sourcePath);
                     try (var pathStream = Files.walk(sourcePath)) {
-                        pathStream.filter(p -> !Files.isDirectory(p)).forEach(path -> {
+                        // Collect files into a list for better control
+                        List<Path> files = pathStream.filter(p -> !Files.isDirectory(p)).collect(Collectors.toList());
+                        FTBBackups.LOGGER.debug("Found {} files in directory: {}", files.size(), sourcePath);
+
+                        // Process each file
+                        for (Path path : files) {
                             totalFiles.incrementAndGet();
                             if (processFileForArchiveCompression(format, zipOut, tarOut, serverRoot, path)) {
                                 fileAdded.set(true);
                             } else {
                                 failedFiles.incrementAndGet();
                             }
-                        });
+                        }
+                    } catch (IOException e) {
+                        FTBBackups.LOGGER.error("Error walking directory: {}", sourcePath, e);
                     }
+                    FTBBackups.LOGGER.debug("Finished walking directory: {}", sourcePath);
                 } else {
                     totalFiles.incrementAndGet();
                     if (processFileForArchiveCompression(format, zipOut, tarOut, serverRoot, sourcePath)) {
@@ -147,16 +160,24 @@ public class FileUtils {
                 }
             }
 
+            // Check if any files were added
             if (!fileAdded.get()) {
                 FTBBackups.LOGGER.warn("No files were added to the backup archive: {}", archiveFilePath);
                 throw new IOException("No files were compressed into the backup");
             }
 
+            // Log compression results
             if (failedFiles.get() > 0) {
                 FTBBackups.LOGGER.warn("{} out of {} files failed to compress", failedFiles.get(), totalFiles.get());
             } else {
                 FTBBackups.LOGGER.info("Successfully compressed {} files into {}", totalFiles.get(), archiveFilePath);
             }
+        }
+
+        // Verify the archive was created and is not empty
+        if (!Files.exists(archiveFilePath) || Files.size(archiveFilePath) == 0) {
+            FTBBackups.LOGGER.error("Backup archive was not created or is empty: {}", archiveFilePath);
+            throw new IOException("Backup archive was not created or is empty");
         }
     }
 

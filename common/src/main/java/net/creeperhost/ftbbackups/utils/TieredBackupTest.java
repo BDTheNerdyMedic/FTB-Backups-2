@@ -3,7 +3,6 @@ package net.creeperhost.ftbbackups.utils;
 import net.creeperhost.ftbbackups.BackupHandler;
 import net.creeperhost.ftbbackups.FTBBackups;
 import net.creeperhost.ftbbackups.config.Config;
-import net.creeperhost.ftbbackups.config.Format;
 import net.creeperhost.ftbbackups.data.Backup;
 
 import java.util.Calendar;
@@ -53,9 +52,10 @@ public class TieredBackupTest {
         String date = calendar.get(Calendar.YEAR) + "-" + (calendar.get(Calendar.MONTH) + 1) + "-" + calendar.get(Calendar.DATE);
         String time = calendar.get(Calendar.HOUR_OF_DAY) + "-" + calendar.get(Calendar.MINUTE) + "-" + calendar.get(Calendar.SECOND);
         String s = date + "_" + time;
-        switch (Config.cached().backup_format) {
+        switch (Config.getConfigData().backup_format) {
             case ZIP -> s += ".zip";
             case ZSTD -> s += ".tar.zst";
+            case DIRECTORY -> s += "";
         }
         FTBBackups.LOGGER.info("Simulating backup at time: {}, Backup Count: {}", new Date(getBackupTime()), testBackupCount);
         return s;

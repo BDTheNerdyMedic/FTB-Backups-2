@@ -521,6 +521,7 @@ public class BackupHandler {
         try {
             alertPlayers(minecraftServer, Component.translatable(FTBBackups.MOD_ID + ".backup.starting"));
             List<Path> backupPaths = collectBackupPaths();
+            FTBBackups.LOGGER.debug("Collected backup paths: {}", backupPaths);
 
             if (Config.getConfigData().enable_console_progress) {
                 scheduleStatusCheck(backupLocation, format, expectedSize, 5, TimeUnit.SECONDS);
@@ -528,7 +529,6 @@ public class BackupHandler {
                 FTBBackups.LOGGER.debug("Console progress disabled.");
             }
 
-            FTBBackups.LOGGER.debug("Generating backup preview before file operations...");
             String preview = createPreview(minecraftServer);
             backup.setPreview(preview);
             backupPreview.set(preview);
@@ -553,11 +553,34 @@ public class BackupHandler {
         }
     }
 
-    private static List<Path> collectBackupPaths() {
+    /**
+    * Collects the list of paths to be backed up, including the world folder and any additional paths
+    * specified in the configuration, while excluding paths that match the specified exclusion patterns.
+    *
+    * @return A list of {@link Path} objects representing the directories and files to be included in the backup.
+    * @throws IOException If an I/O error occurs while walking the server root directory to collect additional paths.
+    * @throws IllegalStateException If the world folder does not exist, is not a directory, or is not readable.
+    */
+    private static List<Path> collectBackupPaths() throws IOException {
         List<Path> backupPaths = new LinkedList<>();
+
+        // Validate and add the world folder
+        if (!Files.exists(worldFolder)) {
+            FTBBackups.LOGGER.error("World folder does not exist: {}", worldFolder);
+            throw new IllegalStateException("World folder does not exist");
+        }
+        if (!Files.isDirectory(worldFolder)) {
+            FTBBackups.LOGGER.error("World folder is not a directory: {}", worldFolder);
+            throw new IllegalStateException("World folder is not a directory");
+        }
+        if (!Files.isReadable(worldFolder)) {
+            FTBBackups.LOGGER.error("World folder is not readable: {}", worldFolder);
+            throw new IllegalStateException("World folder is not readable");
+        }
         backupPaths.add(worldFolder);
         FTBBackups.LOGGER.debug("Added world folder to backup paths: {}", worldFolder);
 
+        // Process additional paths if specified
         List<String> additionalPaths = Config.getConfigData().additional_paths;
         List<String> excludedPatterns = Config.getConfigData().excluded_paths;
         if (!additionalPaths.isEmpty()) {
@@ -565,8 +588,9 @@ public class BackupHandler {
                 List<Path> paths = pathStream.toList();
                 for (Path path : paths) {
                     Path relFile = serverRoot.relativize(path);
-                    if (FileUtils.doesFilterExcludePath(relFile, additionalPaths)
-                            && !FileUtils.doesFilterExcludePath(relFile, excludedPatterns)) {
+                    // Include if matches any additional_paths and not excluded by excluded_patterns
+                    if (FileUtils.doesFilterExcludePath(relFile, additionalPaths) &&
+                            !FileUtils.doesFilterExcludePath(relFile, excludedPatterns)) {
                         if (!FileUtils.isSubPathOf(path, serverRoot)) {
                             FTBBackups.LOGGER.warn("Ignoring path {}: not a child of server root.", relFile);
                             continue;
@@ -579,23 +603,47 @@ public class BackupHandler {
                             FTBBackups.LOGGER.warn("Ignoring path {}: child of backups folder.", relFile);
                             continue;
                         }
-                        if (Files.exists(path)) {
+                        if (Files.exists(path) && Files.isReadable(path)) {
                             if (Files.isDirectory(path) || !isChildOfAny(path, backupPaths)) {
                                 backupPaths.add(path);
                                 FTBBackups.LOGGER.debug("Added additional path to backup: {}", path);
                             }
+                        } else if (Files.exists(path)) {
+                            FTBBackups.LOGGER.warn("Path exists but is not readable: {}", relFile);
                         } else {
-                            FTBBackups.LOGGER.debug("Path no longer exists, skipping: {}", relFile);
+                            FTBBackups.LOGGER.debug("Path does not exist: {}", relFile);
                         }
                     }
                 }
             } catch (IOException e) {
                 FTBBackups.LOGGER.error("Error walking server root for additional files", e);
+                throw e;
             }
         }
+
+        // Verify and log the collected paths
+        FTBBackups.LOGGER.debug("Collected {} paths for backup", backupPaths.size());
+        if (FTBBackups.LOGGER.isDebugEnabled()) {
+            backupPaths.forEach(path -> FTBBackups.LOGGER.debug("Backup path: {}", path));
+        }
+        if (backupPaths.isEmpty()) {
+            FTBBackups.LOGGER.error("No paths collected for backup. Aborting.");
+            throw new IllegalStateException("No paths to backup");
+        }
+
         return backupPaths;
     }
 
+    /**
+    * Executes the backup operation by copying files to a directory or compressing them into an archive,
+    * based on the specified format. If a file is missing during the process, it will be skipped with a warning.
+    * The method verifies that the backup file or directory was created successfully.
+    *
+    * @param backupPath The path where the backup will be stored.
+    * @param format The format of the backup (e.g., DIRECTORY, ZIP, ZSTD).
+    * @param backupPaths The list of paths to be included in the backup.
+    * @throws IOException If an I/O error occurs during the backup process, or if the backup file or directory fails to be created.
+    */
     private static void executeBackupOperation(Path backupPath, Format format, List<Path> backupPaths)
             throws IOException {
         FTBBackups.LOGGER.info("Starting backup operation with format: {}", format);
