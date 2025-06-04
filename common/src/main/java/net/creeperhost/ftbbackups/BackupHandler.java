@@ -383,7 +383,10 @@ public class BackupHandler {
      */
     public static void createBackup(MinecraftServer minecraftServer, boolean protect, String name) {
         currentBackupId = "Backup-" + System.currentTimeMillis();
-        FTBBackups.LOGGER.info("[{}] Starting backup '{}'", currentBackupId, name);
+        // FTBBackups.LOGGER.info("[{}] Starting backup '{}'", currentBackupId, name);
+        FTBBackups.LOGGER.info("[{}] Backup initiated. Thread: {}, Type: {}", currentBackupId,
+                Thread.currentThread().getName(),
+                protect ? "Manual" : name.equals("automated") ? "Cron" : "Command-line");
         worldFolder = minecraftServer.getWorldPath(LevelResource.ROOT).toAbsolutePath();
 
         // Step 1: Check if backup should be skipped due to non-resource conditions
@@ -479,6 +482,11 @@ public class BackupHandler {
         }
         if (!worldFile.canRead()) {
             failMessage = "World folder is not readable";
+            logLevel = ConfigData.LoggingLevel.ERROR;
+            return new BackupFeasibility(false, failMessage, logLevel);
+        }
+        if (!worldFile.canWrite()) {
+            failMessage = "World folder is not writable";
             logLevel = ConfigData.LoggingLevel.ERROR;
             return new BackupFeasibility(false, failMessage, logLevel);
         }
@@ -591,7 +599,27 @@ public class BackupHandler {
         try {
             alertPlayers(minecraftServer, Component.translatable(FTBBackups.MOD_ID + ".backup.starting"));
             List<Path> backupPaths = collectBackupPaths();
-            FTBBackups.LOGGER.debug("Collected backup paths: {}", backupPaths);
+            // FTBBackups.LOGGER.debug("Collected backup paths: {}", backupPaths);
+
+            // Calculate expectedSize based on total size of backup paths
+            long totalSize = 0;
+            for (Path path : backupPaths) {
+                totalSize += FileUtils.getFolderSize(path);
+            }
+
+            // Adjust for compression if applicable
+            if (format != Format.DIRECTORY) {
+                Backup latestBackup = getLatestBackup();
+                if (latestBackup != null) {
+                    float ratio = latestBackup.getRatio(); // Compression ratio from previous backup
+                    expectedSize = (long) (totalSize * ratio);
+                } else {
+                    // No previous backup; assume a default compression ratio (e.g., 70%)
+                    expectedSize = (long) (totalSize * 0.7);
+                }
+            } else {
+                expectedSize = totalSize; // No compression for DIRECTORY format
+            }
 
             if (Config.getConfigData().enable_console_progress) {
                 scheduleStatusCheck(backupLocation, format, expectedSize, 5, TimeUnit.SECONDS);
@@ -650,55 +678,57 @@ public class BackupHandler {
         backupPaths.add(worldFolder);
         FTBBackups.LOGGER.debug("Added world folder to backup paths: {}", worldFolder);
 
-        // Process additional paths if specified
+        // Process additional paths
         List<String> additionalPaths = Config.getConfigData().additional_paths;
         List<String> excludedPatterns = Config.getConfigData().excluded_paths;
         if (!additionalPaths.isEmpty()) {
             try (Stream<Path> pathStream = Files.walk(serverRoot)) {
-                List<Path> paths = pathStream.toList();
-                for (Path path : paths) {
-                    Path relFile = serverRoot.relativize(path);
-                    // Include if matches any additional_paths and not excluded by excluded_patterns
-                    if (FileUtils.doesFilterExcludePath(relFile, additionalPaths) &&
-                            !FileUtils.doesFilterExcludePath(relFile, excludedPatterns)) {
-                        if (!FileUtils.isSubPathOf(path, serverRoot)) {
-                            FTBBackups.LOGGER.warn("Ignoring path {}: not a child of server root.", relFile);
-                            continue;
-                        }
-                        if (FileUtils.isSubPathOf(path, worldFolder)) {
-                            FTBBackups.LOGGER.debug("Skipping path {}: already included in world folder.", relFile);
-                            continue;
-                        }
-                        if (FileUtils.isSubPathOf(path, backupFolderPath)) {
-                            FTBBackups.LOGGER.warn("Ignoring path {}: child of backups folder.", relFile);
-                            continue;
-                        }
-                        if (Files.exists(path) && Files.isReadable(path)) {
-                            if (Files.isDirectory(path) || !isChildOfAny(path, backupPaths)) {
-                                backupPaths.add(path);
-                                FTBBackups.LOGGER.debug("Added additional path to backup: {}", path);
+                pathStream.forEach(path -> {
+                    try {
+                        Path relFile = serverRoot.relativize(path);
+                        if (FileUtils.doesFilterExcludePath(relFile, additionalPaths) &&
+                                !FileUtils.doesFilterExcludePath(relFile, excludedPatterns)) {
+                            if (!FileUtils.isSubPathOf(path, serverRoot)) {
+                                FTBBackups.LOGGER.warn("Ignoring path {}: not a child of server root.", relFile);
+                                return;
                             }
-                        } else if (Files.exists(path)) {
-                            FTBBackups.LOGGER.warn("Path exists but is not readable: {}", relFile);
+                            if (FileUtils.isSubPathOf(path, worldFolder)) {
+                                FTBBackups.LOGGER.debug("Skipping path {}: already included in world folder.", relFile);
+                                return;
+                            }
+                            if (FileUtils.isSubPathOf(path, backupFolderPath)) {
+                                FTBBackups.LOGGER.warn("Ignoring path {}: child of backups folder.", relFile);
+                                return;
+                            }
+                            if (Files.exists(path) && Files.isReadable(path)) {
+                                if (Files.isDirectory(path) || !isChildOfAny(path, backupPaths)) {
+                                    backupPaths.add(path);
+                                    FTBBackups.LOGGER.debug("Added additional path to backup: {}", path);
+                                }
+                            } else if (Files.exists(path)) {
+                                FTBBackups.LOGGER.warn("Path exists but is not readable: {}", relFile);
+                            } else {
+                                FTBBackups.LOGGER.debug("Path does not exist: {}", relFile);
+                            }
+                        }
+                    } catch (Exception e) {
+                        if (e.getCause() instanceof NoSuchFileException || e instanceof NoSuchFileException) {
+                            FTBBackups.LOGGER.debug("Skipping missing file: {}", path);
                         } else {
-                            FTBBackups.LOGGER.debug("Path does not exist: {}", relFile);
+                            FTBBackups.LOGGER.warn("Error processing path {}: {}", path, e.getMessage());
                         }
                     }
-                }
+                });
             } catch (IOException e) {
-                FTBBackups.LOGGER.error("Error walking server root for additional files", e);
+                FTBBackups.LOGGER.error("Critical error walking server root: {}", e.getMessage());
                 throw e;
             }
         }
 
-        // Verify and log the collected paths
         FTBBackups.LOGGER.debug("Collected {} paths for backup", backupPaths.size());
-        if (FTBBackups.LOGGER.isDebugEnabled()) {
-            backupPaths.forEach(path -> FTBBackups.LOGGER.debug("Backup path: {}", path));
-        }
         if (backupPaths.isEmpty()) {
             FTBBackups.LOGGER.error("No paths collected for backup. Aborting.");
-            throw new IllegalStateException("No paths to backup");
+            throw new IllegalStateException("No paths collected for backup.");
         }
 
         return backupPaths;
@@ -737,7 +767,7 @@ public class BackupHandler {
             }
         } catch (UncheckedIOException uioe) {
             if (uioe.getCause() instanceof NoSuchFileException) {
-                FTBBackups.LOGGER.warn("Skipping missing file during backup: {}", uioe.getCause().getMessage());
+                FTBBackups.LOGGER.warn("[executeBackupOperation] Skipping missing file during backup: {}", uioe.getCause().getMessage());
             } else {
                 throw uioe;
             }
@@ -828,7 +858,7 @@ public class BackupHandler {
             }
             case UncheckedIOException uncheckedIOException when uncheckedIOException
                     .getCause() instanceof NoSuchFileException -> {
-                FTBBackups.LOGGER.warn("Skipping missing file during backup: {}",
+                FTBBackups.LOGGER.warn("[handleBackupException] Skipping missing file during backup: {}",
                         uncheckedIOException.getCause().getMessage());
                 shouldFailBackup = false;
             }

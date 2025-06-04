@@ -131,11 +131,11 @@ public class FileUtils {
             // Process each source path
             for (Path sourcePath : sourcePaths) {
                 if (Files.isDirectory(sourcePath)) {
-                    FTBBackups.LOGGER.debug("Starting to walk directory: {}", sourcePath);
+                    // FTBBackups.LOGGER.debug("Starting to walk directory: {}", sourcePath);
                     try (var pathStream = Files.walk(sourcePath)) {
                         // Collect files into a list for better control
                         List<Path> files = pathStream.filter(p -> !Files.isDirectory(p)).collect(Collectors.toList());
-                        FTBBackups.LOGGER.debug("Found {} files in directory: {}", files.size(), sourcePath);
+                        // FTBBackups.LOGGER.debug("Found {} files in directory: {}", files.size(), sourcePath);
 
                         // Process each file
                         for (Path path : files) {
@@ -149,7 +149,7 @@ public class FileUtils {
                     } catch (IOException e) {
                         FTBBackups.LOGGER.error("Error walking directory: {}", sourcePath, e);
                     }
-                    FTBBackups.LOGGER.debug("Finished walking directory: {}", sourcePath);
+                    // FTBBackups.LOGGER.debug("Finished walking directory: {}", sourcePath);
                 } else {
                     totalFiles.incrementAndGet();
                     if (processFileForArchiveCompression(format, zipOut, tarOut, serverRoot, sourcePath)) {
@@ -172,13 +172,17 @@ public class FileUtils {
             } else {
                 FTBBackups.LOGGER.info("Successfully compressed {} files into {}", totalFiles.get(), archiveFilePath);
             }
+        } catch (IOException e) {
+            FTBBackups.LOGGER.error("Compression failed: {}", e.getMessage(), e);
+            throw e;
+        } finally {
+            // Verify the archive was created and is not empty
+            if (!Files.exists(archiveFilePath) || Files.size(archiveFilePath) == 0) {
+                FTBBackups.LOGGER.error("Backup archive was not created or is empty: {}", archiveFilePath);
+                throw new IOException("Backup archive was not created or is empty");
+            }
         }
 
-        // Verify the archive was created and is not empty
-        if (!Files.exists(archiveFilePath) || Files.size(archiveFilePath) == 0) {
-            FTBBackups.LOGGER.error("Backup archive was not created or is empty: {}", archiveFilePath);
-            throw new IOException("Backup archive was not created or is empty");
-        }
     }
 
     /**
@@ -247,8 +251,14 @@ public class FileUtils {
             try (BufferedInputStream in = new BufferedInputStream(Files.newInputStream(file), 8192)) {
                 byte[] buffer = new byte[8192];
                 int bytesRead;
-                while ((bytesRead = in.read(buffer)) != -1) {
-                    tarOut.write(buffer, 0, bytesRead);
+                try {
+                    while ((bytesRead = in.read(buffer)) != -1) {
+                        tarOut.write(buffer, 0, bytesRead);
+                    }
+                    tarOut.flush();
+                } catch (IOException e) {
+                    FTBBackups.LOGGER.error("ZSTD compression error for file {}: {}", file, e.getMessage());
+                    throw e;
                 }
             }
         }
