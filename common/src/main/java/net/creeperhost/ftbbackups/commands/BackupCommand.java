@@ -52,6 +52,7 @@ public class BackupCommand {
         CONFIG_OPTIONS.put("notification_mode", new ConfigOption<>("notification_mode", NotificationMode.class, config -> config.notification_mode, (config, value) -> config.notification_mode = NotificationMode.valueOf(value.toUpperCase())));
         CONFIG_OPTIONS.put("enable_console_progress", new ConfigOption<>("enable_console_progress", boolean.class, config -> config.enable_console_progress, (config, value) -> config.enable_console_progress = Boolean.parseBoolean(value)));
         CONFIG_OPTIONS.put("logging_level", new ConfigOption<>("logging_level", LoggingLevel.class, config -> config.logging_level, (config, value) -> config.logging_level = LoggingLevel.valueOf(value.toUpperCase())));
+        CONFIG_OPTIONS.put("verbose_logging", new ConfigOption<>("verbose_logging", boolean.class, config -> config.verbose_logging, (config, value) -> config.verbose_logging = Boolean.parseBoolean(value)));
         CONFIG_OPTIONS.put("retention_mode", new ConfigOption<>("retention_mode", RetentionMode.class, config -> config.retention_mode, (config, value) -> config.retention_mode = RetentionMode.valueOf(value.toUpperCase())));
         CONFIG_OPTIONS.put("max_backups", new ConfigOption<>("max_backups", int.class, config -> config.max_backups, (config, value) -> config.max_backups = Integer.parseInt(value)));
         CONFIG_OPTIONS.put("keep_latest", new ConfigOption<>("keep_latest", int.class, config -> config.keep_latest, (config, value) -> config.keep_latest = Integer.parseInt(value)));

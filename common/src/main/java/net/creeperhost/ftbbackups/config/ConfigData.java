@@ -63,6 +63,12 @@ public class ConfigData {
       " * Sets the logging level for the mod. Options: DEBUG, INFO, WARN, ERROR. DEBUG provides detailed logs in debug.log for troubleshooting.\n")
   public LoggingLevel logging_level = LoggingLevel.INFO;
 
+  @Comment("\n" +
+          " * Enables verbose logging for backup operations, providing detailed information about the backup process (e.g., files included).\n"
+          +
+          " * Requires logging_level to be set to DEBUG to see these messages.\n")
+  public boolean verbose_logging = false;
+
   // Backup Retention Settings
   // -------------------------
   // These settings determine how many backups are kept and for how long.

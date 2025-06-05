@@ -4,9 +4,11 @@ import com.google.common.hash.HashCode;
 import com.google.common.hash.Hasher;
 import com.google.common.hash.Hashing;
 import io.airlift.compress.zstd.ZstdOutputStream;
-import net.creeperhost.ftbbackups.FTBBackups;
+import net.creeperhost.ftbbackups.BackupHandler;
 import net.creeperhost.ftbbackups.config.Config;
 import net.creeperhost.ftbbackups.config.ConfigData.Format;
+
+import org.apache.logging.log4j.Logger;
 import org.kamranzafar.jtar.TarEntry;
 import org.kamranzafar.jtar.TarOutputStream;
 
@@ -72,23 +74,24 @@ public class FileUtils {
      * @param file the file to copy
      */
     private static void copySingleFileToDirectory(Path destDir, Path serverRoot, Path file) {
+        Logger logger = BackupHandler.getCurrentLogger();
         if (shouldExcludeFileFromBackup(file)) {
-            FTBBackups.LOGGER.debug("Skipping file during copy: {}", file);
+            logger.debug("Skipping file during copy: {}", file);
             return;
         }
         try {
             Path relFile = serverRoot.relativize(file);
             if (matchesAnyFilter(relFile, Config.getConfigData().excluded_paths)) {
-                FTBBackups.LOGGER.debug("Skipping excluded file: {}", relFile);
+                logger.debug("Skipping excluded file: {}", relFile);
                 return;
             }
             Path destFile = destDir.resolve(relFile);
             Files.createDirectories(destFile.getParent());
             Files.copy(file, destFile);
         } catch (java.nio.file.NoSuchFileException e) {
-            FTBBackups.LOGGER.debug("File disappeared during copy, skipping: {}", file);
+            logger.debug("File disappeared during copy, skipping: {}", file);
         } catch (IOException e) {
-            FTBBackups.LOGGER.warn("Error copying file {}: {}", file, e.getMessage(), e);
+            logger.warn("Error copying file {}: {}", file, e.getMessage(), e);
         }
     }
 
@@ -102,19 +105,20 @@ public class FileUtils {
     * @throws IOException if an I/O error occurs during compression
     */
     public static void compressSourcePathsToArchive(Path archiveFilePath, Path serverRoot, Iterable<Path> sourcePaths, Format format) throws IOException {
+        Logger logger = BackupHandler.getCurrentLogger();
         // Create the archive file and its parent directories
         try {
             Files.createDirectories(archiveFilePath.getParent());
             Path archivePath = Files.createFile(archiveFilePath);
-            FTBBackups.LOGGER.debug("Backup file created at: {}", archivePath);
+            logger.debug("Backup file created at: {}", archivePath);
         } catch (FileAlreadyExistsException e) {
-            FTBBackups.LOGGER.error("Backup file already exists: {}", archiveFilePath, e);
+            logger.error("Backup file already exists: {}", archiveFilePath, e);
             throw e;
         } catch (IOException e) {
-            FTBBackups.LOGGER.error("I/O error when creating backup file: {}", archiveFilePath, e);
+            logger.error("I/O error when creating backup file: {}", archiveFilePath, e);
             throw e;
         } catch (SecurityException e) {
-            FTBBackups.LOGGER.error("Security exception: write access denied for backup file: {}", archiveFilePath, e);
+            logger.error("Security exception: write access denied for backup file: {}", archiveFilePath, e);
             throw e;
         }
 
@@ -131,11 +135,11 @@ public class FileUtils {
             // Process each source path
             for (Path sourcePath : sourcePaths) {
                 if (Files.isDirectory(sourcePath)) {
-                    // FTBBackups.LOGGER.debug("Starting to walk directory: {}", sourcePath);
+                    // logger.debug("Starting to walk directory: {}", sourcePath);
                     try (var pathStream = Files.walk(sourcePath)) {
                         // Collect files into a list for better control
                         List<Path> files = pathStream.filter(p -> !Files.isDirectory(p)).collect(Collectors.toList());
-                        // FTBBackups.LOGGER.debug("Found {} files in directory: {}", files.size(), sourcePath);
+                        // logger.debug("Found {} files in directory: {}", files.size(), sourcePath);
 
                         // Process each file
                         for (Path path : files) {
@@ -147,9 +151,9 @@ public class FileUtils {
                             }
                         }
                     } catch (IOException e) {
-                        FTBBackups.LOGGER.error("Error walking directory: {}", sourcePath, e);
+                        logger.error("Error walking directory: {}", sourcePath, e);
                     }
-                    // FTBBackups.LOGGER.debug("Finished walking directory: {}", sourcePath);
+                    // logger.debug("Finished walking directory: {}", sourcePath);
                 } else {
                     totalFiles.incrementAndGet();
                     if (processFileForArchiveCompression(format, zipOut, tarOut, serverRoot, sourcePath)) {
@@ -162,23 +166,23 @@ public class FileUtils {
 
             // Check if any files were added
             if (!fileAdded.get()) {
-                FTBBackups.LOGGER.warn("No files were added to the backup archive: {}", archiveFilePath);
+                logger.warn("No files were added to the backup archive: {}", archiveFilePath);
                 throw new IOException("No files were compressed into the backup");
             }
 
             // Log compression results
             if (failedFiles.get() > 0) {
-                FTBBackups.LOGGER.warn("{} out of {} files failed to compress", failedFiles.get(), totalFiles.get());
+                logger.warn("{} out of {} files failed to compress", failedFiles.get(), totalFiles.get());
             } else {
-                FTBBackups.LOGGER.info("Successfully compressed {} files into {}", totalFiles.get(), archiveFilePath);
+                logger.info("Successfully compressed {} files into {}", totalFiles.get(), archiveFilePath);
             }
         } catch (IOException e) {
-            FTBBackups.LOGGER.error("Compression failed: {}", e.getMessage(), e);
+            logger.error("Compression failed: {}", e.getMessage(), e);
             throw e;
         } finally {
             // Verify the archive was created and is not empty
             if (!Files.exists(archiveFilePath) || Files.size(archiveFilePath) == 0) {
-                FTBBackups.LOGGER.error("Backup archive was not created or is empty: {}", archiveFilePath);
+                logger.error("Backup archive was not created or is empty: {}", archiveFilePath);
                 throw new IOException("Backup archive was not created or is empty");
             }
         }
@@ -196,23 +200,24 @@ public class FileUtils {
      * @return true if the file was successfully processed and added, false otherwise
      */
     private static boolean processFileForArchiveCompression(Format format, ZipOutputStream zipOut, TarOutputStream tarOut, Path serverRoot, Path file) {
+        Logger logger = BackupHandler.getCurrentLogger();
         if (shouldExcludeFileFromBackup(file)) {
-            FTBBackups.LOGGER.debug("Skipping file during compression: {}", file);
+            logger.debug("Skipping file during compression: {}", file);
             return false;
         }
         try {
             Path relFile = serverRoot.relativize(file);
             if (matchesAnyFilter(relFile, Config.getConfigData().excluded_paths)) {
-                FTBBackups.LOGGER.debug("Skipping excluded file: {}", relFile);
+                logger.debug("Skipping excluded file: {}", relFile);
                 return false;
             }
             streamFileIntoArchive(format, zipOut, tarOut, serverRoot, file);
             return true;
         } catch (java.nio.file.NoSuchFileException e) {
-            FTBBackups.LOGGER.debug("File disappeared during compression, skipping: {}", file);
+            logger.debug("File disappeared during compression, skipping: {}", file);
             return false;
         } catch (IOException e) {
-            FTBBackups.LOGGER.warn("Error compressing file {}: {}", file, e.getMessage(), e);
+            logger.warn("Error compressing file {}: {}", file, e.getMessage(), e);
             return false;
         }
     }
@@ -230,6 +235,7 @@ public class FileUtils {
     private static void streamFileIntoArchive(Format format, ZipOutputStream zipOut, TarOutputStream tarOut, Path serverRoot, Path file) throws IOException {
         Path relFile = serverRoot.relativize(file);
         BasicFileAttributes attrs = Files.readAttributes(file, BasicFileAttributes.class);
+        Logger logger = BackupHandler.getCurrentLogger();
 
         if (format == Format.ZIP) {
             ZipEntry zipEntry = new ZipEntry(relFile.toString());
@@ -257,7 +263,7 @@ public class FileUtils {
                     }
                     tarOut.flush();
                 } catch (IOException e) {
-                    FTBBackups.LOGGER.error("ZSTD compression error for file {}: {}", file, e.getMessage());
+                    logger.error("ZSTD compression error for file {}: {}", file, e.getMessage());
                     throw e;
                 }
             }
@@ -327,11 +333,12 @@ public class FileUtils {
      * @return the SHA1 hash as a string, or an empty string if an error occurs
      */
     public static String generateFileSha1(Path path) {
+        Logger logger = BackupHandler.getCurrentLogger();
         try {
             HashCode sha1HashCode = com.google.common.io.Files.asByteSource(path.toFile()).hash(Hashing.sha1());
             return sha1HashCode.toString();
         } catch (IOException e) {
-            FTBBackups.LOGGER.error("Error generating SHA1 for file {}: {}", path, e.getMessage(), e);
+            logger.error("Error generating SHA1 for file {}: {}", path, e.getMessage(), e);
             return "";
         }
     }
@@ -343,6 +350,7 @@ public class FileUtils {
      * @return the combined SHA1 hash as a string, or an empty string if an error occurs
      */
     public static String generateDirectorySha1(Path directory) {
+        Logger logger = BackupHandler.getCurrentLogger();
         try {
             Hasher hasher = Hashing.sha1().newHasher();
             try (var pathStream = Files.walk(directory)) {
@@ -351,13 +359,13 @@ public class FileUtils {
                         HashCode hash = com.google.common.io.Files.asByteSource(path.toFile()).hash(Hashing.sha1());
                         hasher.putBytes(hash.asBytes());
                     } catch (IOException e) {
-                        FTBBackups.LOGGER.warn("Error hashing file: {}", path, e);
+                        logger.warn("Error hashing file: {}", path, e);
                     }
                 });
             }
             return hasher.hash().toString();
         } catch (IOException e) {
-            FTBBackups.LOGGER.error("Error walking directory for SHA1: {}", directory, e);
+            logger.error("Error walking directory for SHA1: {}", directory, e);
             return "";
         }
     }
@@ -369,6 +377,7 @@ public class FileUtils {
      * @return the total size in bytes
      */
     public static long getFolderSize(Path folder) {
+        Logger logger = BackupHandler.getCurrentLogger();
         if (!Files.exists(folder)) {
             return 0L;
         }
@@ -376,7 +385,7 @@ public class FileUtils {
             try {
                 return Files.size(folder);
             } catch (IOException e) {
-                FTBBackups.LOGGER.warn("Error getting size of file: {}", folder, e);
+                logger.warn("Error getting size of file: {}", folder, e);
                 return 0L;
             }
         }
@@ -386,13 +395,13 @@ public class FileUtils {
                         try {
                             return Files.size(path);
                         } catch (IOException e) {
-                            FTBBackups.LOGGER.warn("Error getting size of file: {}", path, e);
+                            logger.warn("Error getting size of file: {}", path, e);
                             return 0L;
                         }
                     })
                     .sum();
         } catch (IOException e) {
-            FTBBackups.LOGGER.warn("Error walking folder: {}", folder, e);
+            logger.warn("Error walking folder: {}", folder, e);
             return 0L;
         }
     }
@@ -445,6 +454,7 @@ public class FileUtils {
      * @return the size in bytes
      */
     public static long getFileOrFolderSize(File file) {
+        Logger logger = BackupHandler.getCurrentLogger();
         if (!file.exists()) {
             return 0L;
         }
@@ -457,13 +467,13 @@ public class FileUtils {
                         try {
                             return Files.size(path);
                         } catch (IOException e) {
-                            FTBBackups.LOGGER.warn("Error getting size of file: {}", path, e);
+                            logger.warn("Error getting size of file: {}", path, e);
                             return 0L;
                         }
                     })
                     .sum();
         } catch (IOException e) {
-            FTBBackups.LOGGER.warn("Error walking directory: {}", file, e);
+            logger.warn("Error walking directory: {}", file, e);
             return 0L;
         }
     }

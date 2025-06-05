@@ -31,7 +31,7 @@ import java.util.concurrent.TimeUnit;
  */
 public class FTBBackups {
     public static final String MOD_ID = "ftbbackups2";
-    public static final Logger LOGGER = LogManager.getLogger(FTBBackups.class);
+    public static final Logger LOGGER = LogManager.getLogger("FTBBackups");
     public static final Logger backupCleanerLogger = LogManager.getLogger("FTBBackups.BackupCleaner");
     public static final Logger backupExecutorLogger = LogManager.getLogger("FTBBackups.BackupExecutor");
     public static final Logger statusMonitorLogger = LogManager.getLogger("FTBBackups.StatusMonitor");
@@ -340,7 +340,7 @@ public class FTBBackups {
                 new ThreadFactoryBuilder()
                         .setDaemon(true)
                         .setUncaughtExceptionHandler((t, e) -> logger.error("Uncaught exception in {} thread", name, e))
-                        .setNameFormat("FTB Backups " + name + " %d")
+                        .setNameFormat(name + " %d")
                         .build());
     }
 }
