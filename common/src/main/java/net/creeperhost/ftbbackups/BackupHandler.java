@@ -35,9 +35,12 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.Charset;
 import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
@@ -85,7 +88,6 @@ public class BackupHandler {
     public static AtomicReference<Backups> backups = new AtomicReference<>(new Backups());
     private static final Object BACKUP_LOCK = new Object();
 
-    private static String failReason = "";
     private static long lastAutoBackup = 0;
 
     public static CompletableFuture<Void> currentFuture;
@@ -537,7 +539,6 @@ public class BackupHandler {
                 return new BackupFeasibility(false, failMessage, logLevel);
             }
         } else {
-            long latestBackupSize = latestBackup.getSize();
             float ratio = latestBackup.getRatio();
             long expectedSize = (long) (Math.ceil(currentWorldSize * ratio) * 1.05);
             if (expectedSize > free) {
@@ -652,13 +653,19 @@ public class BackupHandler {
     }
 
     /**
-    * Collects the list of paths to be backed up, including the world folder and any additional paths
-    * specified in the configuration, while excluding paths that match the specified exclusion patterns.
-    *
-    * @return A list of {@link Path} objects representing the directories and files to be included in the backup.
-    * @throws IOException If an I/O error occurs while walking the server root directory to collect additional paths.
-    * @throws IllegalStateException If the world folder does not exist, is not a directory, or is not readable.
-    */
+     * Collects and returns a list of file and directory paths to be included in the backup.
+     * This method validates the world folder and adds it to the backup paths, then processes
+     * additional paths specified in the configuration, applying inclusion and exclusion filters.
+     * 
+     * <p>The method ensures that both files and directories are included in the backup paths,
+     * and handles errors gracefully by skipping missing files and logging warnings for other issues.
+     * 
+     * <p>If the world folder does not exist, is not a directory, or is not readable, this method
+     * throws an {@link IllegalStateException}.
+     * 
+     * @return a list of {@link Path} objects representing the files and directories to be backed up
+     * @throws IOException if an I/O error occurs during the collection of paths
+     */
     private static List<Path> collectBackupPaths() throws IOException {
         List<Path> backupPaths = new LinkedList<>();
 
@@ -680,49 +687,38 @@ public class BackupHandler {
 
         // Process additional paths
         List<String> additionalPaths = Config.getConfigData().additional_paths;
-        List<String> excludedPatterns = Config.getConfigData().excluded_paths;
         if (!additionalPaths.isEmpty()) {
-            try (Stream<Path> pathStream = Files.walk(serverRoot)) {
-                pathStream.forEach(path -> {
-                    try {
-                        Path relFile = serverRoot.relativize(path);
-                        if (FileUtils.doesFilterExcludePath(relFile, additionalPaths) &&
-                                !FileUtils.doesFilterExcludePath(relFile, excludedPatterns)) {
-                            if (!FileUtils.isSubPathOf(path, serverRoot)) {
-                                FTBBackups.LOGGER.warn("Ignoring path {}: not a child of server root.", relFile);
-                                return;
-                            }
-                            if (FileUtils.isSubPathOf(path, worldFolder)) {
-                                FTBBackups.LOGGER.debug("Skipping path {}: already included in world folder.", relFile);
-                                return;
-                            }
-                            if (FileUtils.isSubPathOf(path, backupFolderPath)) {
-                                FTBBackups.LOGGER.warn("Ignoring path {}: child of backups folder.", relFile);
-                                return;
-                            }
-                            if (Files.exists(path) && Files.isReadable(path)) {
-                                if (Files.isDirectory(path) || !isChildOfAny(path, backupPaths)) {
-                                    backupPaths.add(path);
-                                    FTBBackups.LOGGER.debug("Added additional path to backup: {}", path);
-                                }
-                            } else if (Files.exists(path)) {
-                                FTBBackups.LOGGER.warn("Path exists but is not readable: {}", relFile);
-                            } else {
-                                FTBBackups.LOGGER.debug("Path does not exist: {}", relFile);
-                            }
-                        }
-                    } catch (Exception e) {
-                        if (e.getCause() instanceof NoSuchFileException || e instanceof NoSuchFileException) {
-                            FTBBackups.LOGGER.debug("Skipping missing file: {}", path);
-                        } else {
-                            FTBBackups.LOGGER.warn("Error processing path {}: {}", path, e.getMessage());
-                        }
+            Files.walkFileTree(serverRoot, new SimpleFileVisitor<Path>() {
+                @Override
+                public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
+                    Path relDir = serverRoot.relativize(dir);
+                    if (shouldInclude(dir, relDir)) {
+                        backupPaths.add(dir);
+                        FTBBackups.LOGGER.debug("Added additional directory to backup: {}", dir);
                     }
-                });
-            } catch (IOException e) {
-                FTBBackups.LOGGER.error("Critical error walking server root: {}", e.getMessage());
-                throw e;
-            }
+                    return FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                    Path relFile = serverRoot.relativize(file);
+                    if (shouldInclude(file, relFile) && !isChildOfAny(file, backupPaths)) {
+                        backupPaths.add(file);
+                        FTBBackups.LOGGER.debug("Added additional file to backup: {}", file);
+                    }
+                    return FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public FileVisitResult visitFileFailed(Path path, IOException exc) {
+                    if (exc instanceof NoSuchFileException) {
+                        FTBBackups.LOGGER.debug("Skipping missing file during traversal: {}", path);
+                    } else {
+                        FTBBackups.LOGGER.warn("Error accessing path {}: {}", path, exc.getMessage());
+                    }
+                    return FileVisitResult.CONTINUE;
+                }
+            });
         }
 
         FTBBackups.LOGGER.debug("Collected {} paths for backup", backupPaths.size());
@@ -732,6 +728,18 @@ public class BackupHandler {
         }
 
         return backupPaths;
+    }
+
+    // Helper method to determine if a path should be included in the backup
+    private static boolean shouldInclude(Path path, Path relPath) {
+        // Exclude paths within worldFolder or backupFolderPath
+        if (FileUtils.isSubPathOf(path, worldFolder))
+            return false;
+        if (FileUtils.isSubPathOf(path, backupFolderPath))
+            return false;
+        // Check inclusion and exclusion filters
+        return FileUtils.matchesAnyFilter(relPath, Config.getConfigData().additional_paths) &&
+                !FileUtils.matchesAnyFilter(relPath, Config.getConfigData().excluded_paths);
     }
 
     /**

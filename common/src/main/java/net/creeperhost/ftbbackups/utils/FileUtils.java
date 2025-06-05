@@ -78,7 +78,7 @@ public class FileUtils {
         }
         try {
             Path relFile = serverRoot.relativize(file);
-            if (doesFilterExcludePath(relFile, Config.getConfigData().excluded_paths)) {
+            if (matchesAnyFilter(relFile, Config.getConfigData().excluded_paths)) {
                 FTBBackups.LOGGER.debug("Skipping excluded file: {}", relFile);
                 return;
             }
@@ -202,7 +202,7 @@ public class FileUtils {
         }
         try {
             Path relFile = serverRoot.relativize(file);
-            if (doesFilterExcludePath(relFile, Config.getConfigData().excluded_paths)) {
+            if (matchesAnyFilter(relFile, Config.getConfigData().excluded_paths)) {
                 FTBBackups.LOGGER.debug("Skipping excluded file: {}", relFile);
                 return false;
             }
@@ -282,13 +282,18 @@ public class FileUtils {
     }
 
     /**
-     * Checks if a path is excluded by any of the provided filters.
+     * Checks if the given relative path matches any of the provided filters.
+     *
+     * <p>This method evaluates the path against a list of filter patterns, which may include
+     * wildcards or directory indicators. It returns true if the path matches any filter,
+     * with the implication of the match (e.g., inclusion or exclusion) determined by the
+     * context in which the filter list is used.
      *
      * @param relPath the relative path to evaluate
-     * @param filters the list of exclusion filters
-     * @return true if the path is excluded by any filter, false otherwise
+     * @param filters the list of filter patterns to check against
+     * @return true if the path matches any filter, false otherwise
      */
-    public static boolean doesFilterExcludePath(Path relPath, List<String> filters) {
+    public static boolean matchesAnyFilter(Path relPath, List<String> filters) {
         for (String filter : filters) {
             filter = filter.replaceAll("\\\\", "/");
             boolean directory = filter.endsWith("/");
