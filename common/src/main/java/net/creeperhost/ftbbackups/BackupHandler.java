@@ -133,7 +133,7 @@ public class BackupHandler {
         }
 
         createBackupFolder(backupFolderPath);
-        loadJson();
+        refreshBackupList();
         lastPreview = backups.get().getLastPreview();
         initPreview();
         FTBBackups.LOGGER.debug("BackupHandler initialized successfully.");
@@ -157,213 +157,6 @@ public class BackupHandler {
             blockCount++;
         }
         FTBBackups.LOGGER.debug("Preview initialized with {} block mappings.", blockCount);
-    }
-
-    /**
-     * Generates a preview image for the backup if enabled in the configuration.
-     * Returns an empty string if 'enable_preview' is false or generation fails.
-     *
-     * @param minecraftServer The Minecraft server instance.
-     * @return A base64-encoded string of the preview image or an empty string if disabled or failed.
-     */
-    public static String createPreview(MinecraftServer minecraftServer) {
-        Logger logger = (backupLogger != null) ? backupLogger : FTBBackups.LOGGER;
-        if (!Config.getConfigData().enable_preview) {
-            logger.info("Backup preview disabled in configuration.");
-            backups.get().setLastPreview("");
-            return "";
-        }
-
-        String currentWorldHash = calculateWorldHash(minecraftServer);
-        String storedWorldHash = backups.get().getWorldHash();
-
-        if (currentWorldHash.equals(storedWorldHash) && !lastPreview.isEmpty()) {
-            logger.info("World state unchanged, reusing cached preview.");
-            return lastPreview;
-        }
-
-        logger.info("Starting backup preview generation...");
-        long startTime = System.currentTimeMillis();
-        try {
-            Path worldPath = minecraftServer.getWorldPath(LevelResource.ROOT).toAbsolutePath();
-            logger.debug("Loading world from path: {}", worldPath);
-            PREVIEW.loadWorld(worldPath);
-            LevelIO levelIO = PREVIEW.getLevelIO();
-            logger.debug("LevelIO initialized.");
-
-            // Get dimensions to scan
-            List<String> dimensionsToScan = getDimensionsToScan();
-            logger.debug("Dimensions to scan: {}", dimensionsToScan);
-
-            // Scan each dimension for activity clusters
-            List<ActivityScanner> scanners = new ArrayList<>();
-            for (String dim : dimensionsToScan) {
-                Level level = levelIO.getLevel(dim);
-                if (level != null) {
-                    ActivityScanner scanner = new ActivityScanner(levelIO, level, 1);
-                    if (scanner.findActivityClusters(512, 512, 1)) {
-                        scanners.add(scanner);
-                    }
-                } else {
-                    logger.warn("Dimension {} not found, skipping.", dim);
-                }
-            }
-
-            if (scanners.isEmpty()) {
-                logger.warn("No activity clusters found for preview.");
-                return "";
-            }
-
-            // Select the dimension with the highest habitation factor
-            scanners.sort(Comparator.comparingDouble(ActivityScanner::getTotalHabitationFactor).reversed());
-            ActivityScanner scanner = scanners.get(0);
-            CaptureArea area = scanner.getResults().get(0);
-            logger.debug("Selected highest habitation factor cluster.");
-
-            long captureStart = System.currentTimeMillis();
-            SimplePNG.SimpleImg capture = PREVIEW.newCapture()
-                    .captureArea(area)
-                    .doCapture()
-                    .getImage();
-            logger.debug("Capture completed.");
-
-            ByteArrayOutputStream os = new ByteArrayOutputStream();
-            SimplePNG.writePNG(os, capture);
-            byte[] image = os.toByteArray();
-
-            String newPreview = "data:image/png;base64, " + Base64.getEncoder().encodeToString(image);
-            logger.info("Backup preview created. Scan took {}ms, Capture took {}ms",
-                    captureStart - startTime, System.currentTimeMillis() - captureStart);
-
-            lastPreview = newPreview;
-            backups.get().setWorldHash(currentWorldHash);
-            backups.get().setLastPreview(newPreview);
-            return newPreview;
-        } catch (Exception ex) {
-            logger.error("Error generating backup preview", ex);
-            return "";
-        } finally {
-            try {
-                PREVIEW.close();
-                logger.debug("LevelPreview closed successfully.");
-            } catch (Exception e) {
-                logger.error("Error closing LevelPreview", e);
-            }
-        }
-    }
-
-    /**
-     * Calculates a hash representing the state of region files for specified dimensions.
-     *
-     * @param minecraftServer The server instance to access world data.
-     * @return A hexadecimal string of the SHA-256 hash, or an empty string if an error occurs.
-     */
-    private static String calculateWorldHash(MinecraftServer minecraftServer) {
-        // Get dimensions to scan
-        List<String> dimensionsToScan = getDimensionsToScan();
-        Logger logger = (backupLogger != null) ? backupLogger : FTBBackups.LOGGER;
-        logger.debug("Dimensions to hash: {}", dimensionsToScan);
-
-        // Parse dimensions into ResourceLocation and sort for consistency
-        List<ResourceLocation> dimensionsToHash = new ArrayList<>();
-        for (String dim : dimensionsToScan) {
-            ResourceLocation loc = parseDimensionString(dim);
-            if (loc != null) {
-                dimensionsToHash.add(loc);
-            } else {
-                logger.warn("Invalid dimension name: {}, skipping", dim);
-            }
-        }
-        dimensionsToHash.sort(Comparator.comparing(ResourceLocation::toString));
-        logger.debug("Sorted dimensions to hash: {}", dimensionsToHash);
-
-        try {
-            MessageDigest digest = MessageDigest.getInstance("SHA-256");
-            for (ResourceLocation dim : dimensionsToHash) {
-                Path regionDir = getRegionDirPath(minecraftServer, dim);
-                if (Files.exists(regionDir)) {
-                    try (Stream<Path> walk = Files.walk(regionDir, 1)) {
-                        List<Path> regionFiles = walk
-                                .filter(Files::isRegularFile)
-                                .filter(path -> path.getFileName().toString().matches("r\\.\\d+\\.\\d+\\.mca"))
-                                .sorted() // Ensure consistent file order
-                                .collect(Collectors.toList());
-                        for (Path file : regionFiles) {
-                            long size = Files.size(file);
-                            long lastModified = Files.getLastModifiedTime(file).toMillis();
-                            String fileInfo = dim.toString() + ":" + file.getFileName().toString() + ":" + size + ":" + lastModified;
-                            digest.update(fileInfo.getBytes());
-                        }
-                    }
-                }
-            }
-            byte[] hashBytes = digest.digest();
-            return bytesToHex(hashBytes);
-        } catch (NoSuchAlgorithmException | IOException e) {
-            logger.warn("Error calculating world hash", e);
-            return "";
-        }
-    }
-
-    /**
-    * Retrieves the list of dimensions to scan from the configuration.
-    * If the list is empty, defaults to ["minecraft:overworld"] and logs a warning.
-    *
-    * @return A list of dimension strings to scan.
-    */
-    private static List<String> getDimensionsToScan() {
-        Logger logger = (backupLogger != null) ? backupLogger : FTBBackups.LOGGER;
-        List<String> dimensions = Config.getConfigData().preview_dimensions_list;
-        if (dimensions.isEmpty()) {
-            logger.warn("preview_dimensions_list is empty, defaulting to minecraft:overworld");
-            return Arrays.asList("minecraft:overworld");
-        }
-        return dimensions;
-    }
-
-    /**
-     * Parses a dimension string into a ResourceLocation.
-     * 
-     * @param dimString The dimension string, e.g., "minecraft:overworld".
-     * @return A ResourceLocation object, or null if the string is invalid.
-     */
-    private static ResourceLocation parseDimensionString(String dimString) {
-        String[] parts = dimString.split(":");
-        if (parts.length == 2) {
-            return ResourceLocation.fromNamespaceAndPath(parts[0], parts[1]);
-        }
-        return null;
-    }
-
-    /**
-     * Gets the region directory path for a given dimension.
-     * 
-     * @param server            The server instance.
-     * @param dimensionLocation The dimension's ResourceLocation.
-     * @return The Path to the region directory.
-     */
-    private static Path getRegionDirPath(MinecraftServer server, ResourceLocation dimensionLocation) {
-        Path worldPath = server.getWorldPath(LevelResource.ROOT).toAbsolutePath();
-        if (dimensionLocation.getNamespace().equals("minecraft") && dimensionLocation.getPath().equals("overworld")) {
-            return worldPath.resolve("region");
-        } else {
-            String dimensionPath = "dimensions/" + dimensionLocation.getNamespace() + "/" + dimensionLocation.getPath();
-            return worldPath.resolve(dimensionPath).resolve("region");
-        }
-    }
-
-    /**
-     * Converts a byte array to a hexadecimal string.
-     * 
-     * @param bytes The byte array to convert.
-     * @return The hexadecimal representation.
-     */
-    private static String bytesToHex(byte[] bytes) {
-        StringBuilder sb = new StringBuilder();
-        for (byte b : bytes) {
-            sb.append(String.format("%02x", b));
-        }
-        return sb.toString();
     }
 
     /**
@@ -398,26 +191,12 @@ public class BackupHandler {
         backupLogger.info("Backup initiated. Type: {}", protect ? "Manual" : name.equals("automated") ? "Cron" : "Command-line");
         worldFolder = minecraftServer.getWorldPath(LevelResource.ROOT).toAbsolutePath();
 
-        // Step 1: Check if backup should be skipped due to non-resource conditions
-        BackupFeasibility skipFeasibility = shouldSkipBackup();
-        if (!skipFeasibility.canCreate) {
-            String fullFailMessage = "Backup skipped, Reason: " + skipFeasibility.failMessage;
-            alertPlayers(minecraftServer, Component.translatable(fullFailMessage));
-            logFeasibilityMessage(skipFeasibility, fullFailMessage);
-            backupRunning.set(false);
+        // Perform feasibility checks; return early if any fail
+        if (!handleFeasibilityChecks(minecraftServer)) {
             return;
         }
 
-        // Step 2: Check if backup can be created based on resource availability
-        BackupFeasibility createFeasibility = canCreateBackup();
-        if (!createFeasibility.canCreate) {
-            String fullFailMessage = "Unable to create backup, Reason: " + createFeasibility.failMessage;
-            alertPlayers(minecraftServer, Component.translatable(fullFailMessage));
-            logFeasibilityMessage(createFeasibility, fullFailMessage);
-            return;
-        }
-
-        // Step 3: Proceed with backup setup and execution
+        // Set up the backup environment
         BackupSetup setup = setupBackupEnvironment(minecraftServer, name);
         if (setup == null || setup.backupLocation == null) {
             backupLogger.error("[{}] Failed to set up backup environment", currentBackupId);
@@ -425,7 +204,7 @@ public class BackupHandler {
         }
 
         Format format = Config.getConfigData().backup_format;
-        // Create a new Backup object with the necessary details
+        // Create a new Backup object
         Backup backup = new Backup(
                 worldFolder.normalize().getFileName().toString(),
                 lastAutoBackup,
@@ -437,6 +216,7 @@ public class BackupHandler {
                 format,
                 false);
 
+        // Add the backup to the list and update metadata
         synchronized (BACKUP_LOCK) {
             addBackup(backup);
             updateJson();
@@ -444,7 +224,7 @@ public class BackupHandler {
 
         AtomicLong startTime = new AtomicLong(System.nanoTime());
 
-        // Chain the backup operation to the save future
+        // Schedule the backup operation after the world save completes
         currentFuture = setup.saveFuture.thenRunAsync(() -> {
             performBackup(minecraftServer, setup.backupLocation, format, backup);
         }, FTBBackups.backupExecutor).thenRun(() -> {
@@ -453,6 +233,45 @@ public class BackupHandler {
             clean();
             backupLogger = null;
         });
+    }
+
+    /**
+     * Handles the feasibility checks for creating a backup and manages the outcomes.
+     *
+     * @param minecraftServer The Minecraft server instance.
+     * @return true if both feasibility checks pass, false otherwise.
+     */
+    private static boolean handleFeasibilityChecks(MinecraftServer minecraftServer) {
+        // Check if the backup should be skipped due to non-resource conditions
+        BackupFeasibility skipFeasibility = shouldSkipBackup();
+        if (!skipFeasibility.canCreate) {
+            handleBackupFailure(minecraftServer, skipFeasibility, "Backup skipped, Reason: ");
+            backupRunning.set(false);
+            return false;
+        }
+
+        // Check if the backup can be created based on resource availability
+        BackupFeasibility createFeasibility = isBackupFeasible();
+        if (!createFeasibility.canCreate) {
+            handleBackupFailure(minecraftServer, createFeasibility, "Unable to create backup, Reason: ");
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Handles the failure of a backup feasibility check by alerting players and logging the message.
+     *
+     * @param minecraftServer The Minecraft server instance.
+     * @param feasibility     The BackupFeasibility object containing the failure details.
+     * @param messagePrefix   The prefix for the failure message.
+     */
+    private static void handleBackupFailure(MinecraftServer minecraftServer, BackupFeasibility feasibility,
+            String messagePrefix) {
+        String fullFailMessage = messagePrefix + feasibility.failMessage;
+        alertPlayers(minecraftServer, Component.translatable(fullFailMessage));
+        logFeasibilityMessage(feasibility, fullFailMessage);
     }
 
     /**
@@ -479,7 +298,7 @@ public class BackupHandler {
     *
     * @return A BackupFeasibility object containing the feasibility status, failure message, and logging level.
     */
-    public static BackupFeasibility canCreateBackup() {
+    public static BackupFeasibility isBackupFeasible() {
         String failMessage;
         ConfigData.LoggingLevel logLevel;
 
@@ -595,67 +414,34 @@ public class BackupHandler {
     }
 
     /**
-     * Performs the actual backup operation, including saving the world and copying
-     * files.
-     *
-     * @param minecraftServer The Minecraft server instance.
-     * @param backupLocation  The location to save the backup.
-     * @param format          The format of the backup (e.g., ZIP, DIRECTORY).
-     */
-    private static void performBackup(MinecraftServer minecraftServer, Path backupLocation, Format format, Backup backup) {
-        Logger logger = (backupLogger != null) ? backupLogger : FTBBackups.LOGGER;
+    * Performs the actual backup operation, including saving the world and copying files.
+    *
+    * @param minecraftServer The Minecraft server instance.
+    * @param backupLocation The location to save the backup.
+    * @param format The format of the backup (e.g., ZIP, DIRECTORY).
+    * @param backup The backup object to update with preview and other details.
+    */
+    private static void performBackup(MinecraftServer minecraftServer, Path backupLocation, Format format,
+            Backup backup) {
+        Logger logger = getCurrentLogger();
         logger.info("Performing backup to: {}", backupLocation);
 
         try {
             alertPlayers(minecraftServer, Component.translatable(FTBBackups.MOD_ID + ".backup.starting"));
-            List<Path> backupPaths = collectBackupPaths();
-            // backupLogger.debug("Collected backup paths: {}", backupPaths);
-
-            // Calculate expectedSize based on total size of backup paths
-            long totalSize = 0;
-            for (Path path : backupPaths) {
-                totalSize += FileUtils.getFolderSize(path);
-            }
-
-            // Adjust for compression if applicable
-            if (format != Format.DIRECTORY) {
-                Backup latestBackup = getLatestBackup();
-                if (latestBackup != null) {
-                    float ratio = latestBackup.getRatio(); // Compression ratio from previous backup
-                    expectedSize = (long) (totalSize * ratio);
-                } else {
-                    // No previous backup; assume a default compression ratio (e.g., 70%)
-                    expectedSize = (long) (totalSize * 0.7);
-                }
-            } else {
-                expectedSize = totalSize; // No compression for DIRECTORY format
-            }
+            List<Path> backupPaths = gatherPathsForBackup();
+            long expectedSize = calculateExpectedBackupSize(backupPaths, format);
 
             if (Config.getConfigData().enable_console_progress) {
                 scheduleStatusCheck(backupLocation, format, expectedSize, 5, TimeUnit.SECONDS, logger);
-            } else {
-                backupLogger.debug("Console progress disabled.");
             }
 
             String preview = createPreview(minecraftServer);
             backup.setPreview(preview);
             backupPreview.set(preview);
 
-            backupLogger.debug("Executing backup operation.");
-            try {
-                executeBackupOperation(backupLocation, format, backupPaths);
-            } catch (IOException e) {
-                backupLogger.error("Failed to create backup file at {}: {}", backupLocation, e.getMessage(), e);
-                throw e;
-            }
+            executeBackupOperation(backupLocation, format, backupPaths);
 
-            backupFailed.set(false);
-            if (minecraftServer.getPlayerList().getPlayers().isEmpty()) {
-                setDirty(false);
-            } else {
-                setDirty(true);
-                backupLogger.debug("Player still connected after backup, marking server as needing backed up.");
-            }
+            handlePostBackupTasks(minecraftServer);
         } catch (Exception e) {
             handleBackupException(minecraftServer, e);
         }
@@ -675,7 +461,7 @@ public class BackupHandler {
      * @return a list of {@link Path} objects representing the files and directories to be backed up
      * @throws IOException if an I/O error occurs during the collection of paths
      */
-    private static List<Path> collectBackupPaths() throws IOException {
+    private static List<Path> gatherPathsForBackup() throws IOException {
         List<Path> backupPaths = new LinkedList<>();
         Logger logger = (backupLogger != null) ? backupLogger : FTBBackups.LOGGER;
 
@@ -701,22 +487,24 @@ public class BackupHandler {
             Files.walkFileTree(serverRoot, new SimpleFileVisitor<Path>() {
                 @Override
                 public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
-                    Path relDir = serverRoot.relativize(dir);
-                    if (shouldInclude(dir, relDir)) {
+                    Path relativeDirectory = serverRoot.relativize(dir);
+                    if (shouldInclude(dir, relativeDirectory)) {
                         backupPaths.add(dir);
                         if (Config.getConfigData().verbose_logging) {
-                            logger.debug("Added additional directory to backup: {}", dir);}
+                            logger.debug("Added additional directory to backup: {}", dir);
+                        }
                     }
                     return FileVisitResult.CONTINUE;
                 }
 
                 @Override
                 public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                    Path relFile = serverRoot.relativize(file);
-                    if (shouldInclude(file, relFile) && !isChildOfAny(file, backupPaths)) {
+                    Path relativeFile = serverRoot.relativize(file);
+                    if (shouldInclude(file, relativeFile) && !isChildOfAny(file, backupPaths)) {
                         backupPaths.add(file);
                         if (Config.getConfigData().verbose_logging) {
-                            logger.debug("Added additional file to backup: {}", file);}                        
+                            logger.debug("Added additional file to backup: {}", file);
+                        }
                     }
                     return FileVisitResult.CONTINUE;
                 }
@@ -752,6 +540,305 @@ public class BackupHandler {
         // Check inclusion and exclusion filters
         return FileUtils.matchesAnyFilter(relPath, Config.getConfigData().additional_paths) &&
                 !FileUtils.matchesAnyFilter(relPath, Config.getConfigData().excluded_paths);
+    }
+    
+    /**
+    * Calculates the expected size of the backup based on the paths to be backed up and the backup format.
+    *
+    * @param backupPaths The list of paths to be included in the backup.
+    * @param format The format of the backup (e.g., ZIP, DIRECTORY).
+    * @return The expected size of the backup in bytes.
+    */
+    private static long calculateExpectedBackupSize(List<Path> backupPaths, Format format) {
+        Logger logger = getCurrentLogger();
+        long totalSize = 0;
+        for (Path path : backupPaths) {
+            try {
+                totalSize += FileUtils.getFolderSize(path);
+            } catch (Exception e) {
+                logger.warn("Failed to calculate size for path: {}", path, e);
+            }
+        }
+        if (format != Format.DIRECTORY) {
+            Backup latestBackup = getLatestBackup();
+            if (latestBackup != null) {
+                float ratio = latestBackup.getRatio();
+                return (long) (totalSize * ratio);
+            } else {
+                // Assume a default compression ratio, e.g., 0.7
+                return (long) (totalSize * 0.7);
+            }
+        } else {
+            return totalSize;
+        }
+    }
+
+    /**
+    * Generates a preview image for the backup if enabled in the configuration.
+    * Returns an empty string if 'enable_preview' is false or generation fails.
+    *
+    * @param minecraftServer The Minecraft server instance.
+    * @return A base64-encoded string of the preview image or an empty string if disabled or failed.
+    */
+    public static String createPreview(MinecraftServer minecraftServer) {
+        Logger logger = getCurrentLogger();
+        if (!shouldGeneratePreview(minecraftServer)) {
+            return backups.get().getLastPreview();
+        }
+
+        logger.info("Starting backup preview generation...");
+        long startTime = System.currentTimeMillis();
+        try {
+            Path worldPath = minecraftServer.getWorldPath(LevelResource.ROOT).toAbsolutePath();
+            loadWorldForPreview(worldPath);
+
+            List<ActivityScanner> scanners = scanDimensionsForActivity();
+            ActivityScanner selectedScanner = selectHighestHabitationScanner(scanners);
+            if (selectedScanner == null) {
+                return "";
+            }
+
+            String newPreview = captureAndEncodePreview(selectedScanner);
+
+            lastPreview = newPreview;
+            backups.get().setWorldHash(calculateWorldHash(minecraftServer));
+            backups.get().setLastPreview(newPreview);
+            return newPreview;
+        } catch (Exception ex) {
+            logger.error("Error generating backup preview", ex);
+            return "";
+        } finally {
+            try {
+                PREVIEW.close();
+                logger.debug("LevelPreview closed successfully.");
+            } catch (Exception e) {
+                logger.error("Error closing LevelPreview", e);
+            }
+        }
+    }
+
+    /**
+    * Determines whether a new preview should be generated based on the configuration and world state.
+    *
+    * @param minecraftServer The Minecraft server instance.
+    * @return true if a new preview should be generated, false otherwise.
+    */
+    private static boolean shouldGeneratePreview(MinecraftServer minecraftServer) {
+        Logger logger = getCurrentLogger();
+        if (!Config.getConfigData().enable_preview) {
+            logger.info("Backup preview disabled in configuration.");
+            backups.get().setLastPreview("");
+            return false;
+        }
+
+        String currentWorldHash = calculateWorldHash(minecraftServer);
+        String storedWorldHash = backups.get().getWorldHash();
+
+        if (currentWorldHash.equals(storedWorldHash) && !lastPreview.isEmpty()) {
+            logger.info("World state unchanged, reusing cached preview.");
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+    * Loads the world data from the specified path for preview generation.
+    *
+    * @param worldPath The path to the world directory.
+    * @throws Exception If an error occurs while loading the world.
+    */
+    private static void loadWorldForPreview(Path worldPath) throws Exception {
+        Logger logger = getCurrentLogger();
+        logger.debug("Loading world from path: {}", worldPath);
+        PREVIEW.loadWorld(worldPath);
+        logger.debug("LevelIO initialized.");
+    }
+
+    /**
+    * Scans all dimensions to find areas with activity.
+    *
+    * @return A list of ActivityScanner objects for active dimensions.
+    */
+    private static List<ActivityScanner> scanDimensionsForActivity() {
+        Logger logger = getCurrentLogger();
+        List<String> dimensionsToScan = getDimensionsToScan();
+        logger.debug("Dimensions to scan: {}", dimensionsToScan);
+
+        List<ActivityScanner> scanners = new ArrayList<>();
+        for (String dim : dimensionsToScan) {
+            Level level = PREVIEW.getLevelIO().getLevel(dim);
+            if (level != null) {
+                ActivityScanner scanner = new ActivityScanner(PREVIEW.getLevelIO(), level, 1);
+                if (scanner.findActivityClusters(512, 512, 1)) {
+                    scanners.add(scanner);
+                }
+            } else {
+                logger.warn("Dimension {} not found, skipping.", dim);
+            }
+        }
+        return scanners;
+    }
+
+    /**
+    * Selects the ActivityScanner with the highest habitation factor.
+    *
+    * @param scanners The list of ActivityScanner objects.
+    * @return The ActivityScanner with the highest habitation factor, or null if the list is empty.
+    */
+    private static ActivityScanner selectHighestHabitationScanner(List<ActivityScanner> scanners) {
+        Logger logger = getCurrentLogger();
+        if (scanners.isEmpty()) {
+            logger.warn("No activity clusters found for preview.");
+            return null;
+        }
+
+        scanners.sort(Comparator.comparingDouble(ActivityScanner::getTotalHabitationFactor).reversed());
+        ActivityScanner selectedScanner = scanners.get(0);
+        logger.debug("Selected highest habitation factor cluster.");
+        return selectedScanner;
+    }
+
+    /**
+    * Captures the image from the selected area and encodes it as a base64 string.
+    *
+    * @param scanner The ActivityScanner with the selected area.
+    * @return The base64-encoded string of the preview image.
+    * @throws Exception If an error occurs during image capture or encoding.
+    */
+    private static String captureAndEncodePreview(ActivityScanner scanner) throws Exception {
+        Logger logger = getCurrentLogger();
+        CaptureArea area = scanner.getResults().get(0);
+        long captureStart = System.currentTimeMillis();
+        SimplePNG.SimpleImg capture = PREVIEW.newCapture()
+                .captureArea(area)
+                .doCapture()
+                .getImage();
+        logger.debug("Capture completed.");
+
+        ByteArrayOutputStream os = new ByteArrayOutputStream();
+        SimplePNG.writePNG(os, capture);
+        byte[] image = os.toByteArray();
+
+        String newPreview = "data:image/png;base64, " + Base64.getEncoder().encodeToString(image);
+        logger.info("Backup preview created. Scan took {}ms, Capture took {}ms",
+                captureStart - System.currentTimeMillis(), System.currentTimeMillis() - captureStart);
+        return newPreview;
+    }
+
+    /**
+     * Calculates a hash representing the state of region files for specified dimensions.
+     *
+     * @param minecraftServer The server instance to access world data.
+     * @return A hexadecimal string of the SHA-256 hash, or an empty string if an error occurs.
+     */
+    private static String calculateWorldHash(MinecraftServer minecraftServer) {
+        // Get dimensions to scan
+        List<String> dimensionsToScan = getDimensionsToScan();
+        Logger logger = (backupLogger != null) ? backupLogger : FTBBackups.LOGGER;
+        logger.debug("Dimensions to hash: {}", dimensionsToScan);
+
+        // Parse dimensions into ResourceLocation and sort for consistency
+        List<ResourceLocation> dimensionsToHash = new ArrayList<>();
+        for (String dim : dimensionsToScan) {
+            ResourceLocation loc = parseDimensionString(dim);
+            if (loc != null) {
+                dimensionsToHash.add(loc);
+            } else {
+                logger.warn("Invalid dimension name: {}, skipping", dim);
+            }
+        }
+        dimensionsToHash.sort(Comparator.comparing(ResourceLocation::toString));
+        logger.debug("Sorted dimensions to hash: {}", dimensionsToHash);
+
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            for (ResourceLocation dim : dimensionsToHash) {
+                Path regionDir = getRegionDirPath(minecraftServer, dim);
+                if (Files.exists(regionDir)) {
+                    try (Stream<Path> walk = Files.walk(regionDir, 1)) {
+                        List<Path> regionFiles = walk
+                                .filter(Files::isRegularFile)
+                                .filter(path -> path.getFileName().toString().matches("r\\.\\d+\\.\\d+\\.mca"))
+                                .sorted() // Ensure consistent file order
+                                .collect(Collectors.toList());
+                        for (Path file : regionFiles) {
+                            long size = Files.size(file);
+                            long lastModified = Files.getLastModifiedTime(file).toMillis();
+                            String fileInfo = dim.toString() + ":" + file.getFileName().toString() + ":" + size + ":"
+                                    + lastModified;
+                            digest.update(fileInfo.getBytes());
+                        }
+                    }
+                }
+            }
+            byte[] hashBytes = digest.digest();
+            return bytesToHex(hashBytes);
+        } catch (NoSuchAlgorithmException | IOException e) {
+            logger.warn("Error calculating world hash", e);
+            return "";
+        }
+    }
+
+    /**
+    * Retrieves the list of dimensions to scan from the configuration.
+    * If the list is empty, defaults to ["minecraft:overworld"] and logs a warning.
+    *
+    * @return A list of dimension strings to scan.
+    */
+    private static List<String> getDimensionsToScan() {
+        Logger logger = (backupLogger != null) ? backupLogger : FTBBackups.LOGGER;
+        List<String> dimensions = Config.getConfigData().preview_dimensions_list;
+        if (dimensions.isEmpty()) {
+            logger.warn("preview_dimensions_list is empty, defaulting to minecraft:overworld");
+            return Arrays.asList("minecraft:overworld");
+        }
+        return dimensions;
+    }
+
+    /**
+     * Parses a dimension string into a ResourceLocation.
+     * 
+     * @param dimString The dimension string, e.g., "minecraft:overworld".
+     * @return A ResourceLocation object, or null if the string is invalid.
+     */
+    private static ResourceLocation parseDimensionString(String dimString) {
+        String[] parts = dimString.split(":");
+        if (parts.length == 2) {
+            return ResourceLocation.fromNamespaceAndPath(parts[0], parts[1]);
+        }
+        return null;
+    }
+
+    /**
+     * Gets the region directory path for a given dimension.
+     * 
+     * @param server            The server instance.
+     * @param dimensionLocation The dimension's ResourceLocation.
+     * @return The Path to the region directory.
+     */
+    private static Path getRegionDirPath(MinecraftServer server, ResourceLocation dimensionLocation) {
+        Path worldPath = server.getWorldPath(LevelResource.ROOT).toAbsolutePath();
+        if (dimensionLocation.getNamespace().equals("minecraft") && dimensionLocation.getPath().equals("overworld")) {
+            return worldPath.resolve("region");
+        } else {
+            String dimensionPath = "dimensions/" + dimensionLocation.getNamespace() + "/" + dimensionLocation.getPath();
+            return worldPath.resolve(dimensionPath).resolve("region");
+        }
+    }
+
+    /**
+     * Converts a byte array to a hexadecimal string.
+     * 
+     * @param bytes The byte array to convert.
+     * @return The hexadecimal representation.
+     */
+    private static String bytesToHex(byte[] bytes) {
+        StringBuilder sb = new StringBuilder();
+        for (byte b : bytes) {
+            sb.append(String.format("%02x", b));
+        }
+        return sb.toString();
     }
 
     /**
@@ -792,6 +879,22 @@ public class BackupHandler {
             } else {
                 throw uioe;
             }
+        }
+    }
+
+    /**
+    * Handles post-backup tasks such as setting the backup failed flag and marking the server as dirty if players are still connected.
+    *
+    * @param minecraftServer The Minecraft server instance.
+    */
+    private static void handlePostBackupTasks(MinecraftServer minecraftServer) {
+        Logger logger = getCurrentLogger();
+        backupFailed.set(false);
+        if (minecraftServer.getPlayerList().getPlayers().isEmpty()) {
+            setDirty(false);
+        } else {
+            setDirty(true);
+            logger.debug("Player still connected after backup, marking server as needing backed up.");
         }
     }
 
@@ -1011,7 +1114,7 @@ public class BackupHandler {
             }
     
             // Refresh the backups list from backups.json
-            loadJson();
+            refreshBackupList();
             if (backups == null || backups.get() == null) {
                 logger.debug("Backups reference is null after loading, skipping cleanup.");
                 return;
@@ -1170,10 +1273,10 @@ public class BackupHandler {
      */
     private static void computeRetained(List<Backup> backups, Map<Backup, String> retained, int keepNumber,
             int timeUnit) {
-        String unitName = timeUnit == Calendar.HOUR_OF_DAY ? "Hour"
+        String timeUnitName = timeUnit == Calendar.HOUR_OF_DAY ? "Hour"
                 : timeUnit == Calendar.DAY_OF_YEAR ? "Day" : timeUnit == Calendar.WEEK_OF_YEAR ? "Week" : "Month";
         Logger logger = (backupLogger != null) ? backupLogger : FTBBackups.LOGGER;
-        logger.debug("Computing retained backups for {} (keep {})", unitName, keepNumber);
+        logger.debug("Computing retained backups for {} (keep {})", timeUnitName, keepNumber);
         try {
             Calendar now = Calendar.getInstance();
             now.set(Calendar.MILLISECOND, 0);
@@ -1209,14 +1312,14 @@ public class BackupHandler {
                     }
                 }
                 if (latest != null) {
-                    TieredBackupTest.willKeep(unitName, latest);
-                    String info = (retained.containsKey(latest) ? retained.get(latest) + "&" : "") + unitName;
+                    TieredBackupTest.willKeep(timeUnitName, latest);
+                    String info = (retained.containsKey(latest) ? retained.get(latest) + "&" : "") + timeUnitName;
                     retained.put(latest, info);
-                    logger.debug("Retaining backup: {} for {}", latest.getBackupLocation(), unitName);
+                    logger.debug("Retaining backup: {} for {}", latest.getBackupLocation(), timeUnitName);
                 }
             }
         } catch (Throwable e) {
-            logger.error("Error computing retained backups for {}", unitName, e);
+            logger.error("Error computing retained backups for {}", timeUnitName, e);
         }
     }
 
@@ -1264,25 +1367,26 @@ public class BackupHandler {
     }
 
     /**
-     * Loads the backups metadata from the JSON file.
+     * Refreshes the backups list by loading it from the backups.json file.
+     * If the file does not exist or an error occurs during loading, initializes a new Backups object.
      */
-    public static void loadJson() {
+    public static void refreshBackupList() {
         Path json = defaultBackupLocation.resolve("backups.json");
-        Logger logger = (backupLogger != null) ? backupLogger : FTBBackups.LOGGER;
-        logger.debug("Loading backups from JSON: {}", json);
+        Logger logger = getCurrentLogger();
+        logger.debug("Refreshing backups list from JSON: {}", json);
         if (Files.exists(json)) {
             Gson gson = new Gson();
             try {
                 FileReader fileReader = new FileReader(json.toFile());
-                backups.getAndUpdate(backups1 -> gson.fromJson(fileReader, Backups.class));
+                backups.set(gson.fromJson(fileReader, Backups.class));
                 fileReader.close();
-                logger.debug("Backups loaded successfully.");
+                logger.debug("Backups list refreshed successfully.");
             } catch (Exception e) {
-                logger.error("Error loading backups from JSON", e);
-                backups.getAndUpdate(backups1 -> new Backups());
+                logger.error("Error refreshing backups list from JSON", e);
+                backups.set(new Backups());
             }
         } else {
-            logger.debug("No backups.json found, initializing new backups.");
+            logger.debug("No backups.json found, initializing new backups list.");
             backups.set(new Backups());
         }
     }
