@@ -598,7 +598,7 @@ public class BackupHandler {
                 return "";
             }
 
-            String newPreview = captureAndEncodePreview(selectedScanner);
+            String newPreview = captureAndEncodePreview(selectedScanner, startTime);
 
             lastPreview = newPreview;
             backups.get().setWorldHash(calculateWorldHash(minecraftServer));
@@ -703,10 +703,11 @@ public class BackupHandler {
     * Captures the image from the selected area and encodes it as a base64 string.
     *
     * @param scanner The ActivityScanner with the selected area.
+    * @param startTime The start time of the entire preview generation process.
     * @return The base64-encoded string of the preview image.
     * @throws Exception If an error occurs during image capture or encoding.
     */
-    private static String captureAndEncodePreview(ActivityScanner scanner) throws Exception {
+    private static String captureAndEncodePreview(ActivityScanner scanner, long startTime) throws Exception {
         Logger logger = getCurrentLogger();
         CaptureArea area = scanner.getResults().get(0);
         long captureStart = System.currentTimeMillis();
@@ -714,6 +715,7 @@ public class BackupHandler {
                 .captureArea(area)
                 .doCapture()
                 .getImage();
+        long captureEnd = System.currentTimeMillis();
         logger.debug("Capture completed.");
 
         ByteArrayOutputStream os = new ByteArrayOutputStream();
@@ -721,8 +723,11 @@ public class BackupHandler {
         byte[] image = os.toByteArray();
 
         String newPreview = "data:image/png;base64, " + Base64.getEncoder().encodeToString(image);
-        logger.info("Backup preview created. Scan took {}ms, Capture took {}ms",
-                captureStart - System.currentTimeMillis(), System.currentTimeMillis() - captureStart);
+
+        // Calculate and log both total time and capture time
+        long totalTime = System.currentTimeMillis() - startTime;
+        long captureTime = captureEnd - captureStart;
+        logger.info("Backup preview created. Total time: {}ms, Capture time: {}ms", totalTime, captureTime);
         return newPreview;
     }
 

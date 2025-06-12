@@ -34,25 +34,31 @@ import java.util.zip.ZipOutputStream;
  */
 public class FileUtils {
 
+    // Constants for size calculations (in bytes)
     public static final long KB = 1024L;
     public static final long MB = KB * 1024L;
     public static final long GB = MB * 1024L;
     public static final long TB = GB * 1024L;
 
+    // Constants for size conversions (as doubles for precision)
     public static final double KB_D = 1024D;
     public static final double MB_D = KB_D * 1024D;
     public static final double GB_D = MB_D * 1024D;
     public static final double TB_D = GB_D * 1024D;
 
     /**
-     * Copies files from the specified source paths to the output directory.
+     * Copies files from the specified source paths to the output directory, creating the directory if it does not exist.
+     * Directories are copied recursively, while individual files are copied directly. Skips excluded files based on configuration.
      *
      * @param outputDirectory the directory to copy files to
-     * @param serverRoot the root directory of the server, used for relative paths
-     * @param sourcePaths the paths to copy from
+     * @param serverRoot the root directory of the server, used for calculating relative paths
+     * @param sourcePaths the paths to copy from (files or directories)
      * @throws IOException if an I/O error occurs during copying
      */
     public static void copySourcePathsToDirectory(Path outputDirectory, Path serverRoot, Iterable<Path> sourcePaths) throws IOException {
+        Logger logger = BackupHandler.getCurrentLogger();
+        logger.debug("Starting copy operation to directory: {}", outputDirectory);
+
         Path destDir = Files.createDirectory(outputDirectory);
         for (Path sourcePath : sourcePaths) {
             if (Files.isDirectory(sourcePath)) {
@@ -67,10 +73,11 @@ public class FileUtils {
     }
 
     /**
-     * Copies a single file to the destination directory.
+     * Copies a single file to the destination directory, preserving its relative path from the server root.
+     * Skips files that are excluded based on configuration or if they disappear during the operation.
      *
-     * @param destDir the destination directory
-     * @param serverRoot the server root for relative paths
+     * @param destDir the destination directory to copy the file into
+     * @param serverRoot the server root directory for determining relative paths
      * @param file the file to copy
      */
     private static void copySingleFileToDirectory(Path destDir, Path serverRoot, Path file) {
@@ -96,16 +103,20 @@ public class FileUtils {
     }
 
     /**
-    * Compresses the specified source paths into an archive file.
-    *
-    * @param archiveFilePath the path to the archive file to create
-    * @param serverRoot the root directory of the server, used for relative paths
-    * @param sourcePaths the paths to compress
-    * @param format the format of the archive (ZIP or ZSTD)
-    * @throws IOException if an I/O error occurs during compression
-    */
+     * Compresses the specified source paths into an archive file in the given format (ZIP or ZSTD).
+     * Creates the archive file and its parent directories, processes files recursively for directories,
+     * and tracks the number of files processed and failures. Ensures at least one file is added to the archive.
+     *
+     * @param archiveFilePath the path where the archive file will be created
+     * @param serverRoot the root directory of the server, used for relative paths
+     * @param sourcePaths the paths to compress (files or directories)
+     * @param format the archive format (ZIP or ZSTD)
+     * @throws IOException if an I/O error occurs during compression or if no files are added
+     */
     public static void compressSourcePathsToArchive(Path archiveFilePath, Path serverRoot, Iterable<Path> sourcePaths, Format format) throws IOException {
         Logger logger = BackupHandler.getCurrentLogger();
+        logger.info("Starting compression to archive: {}", archiveFilePath);
+
         // Create the archive file and its parent directories
         try {
             Files.createDirectories(archiveFilePath.getParent());
@@ -135,11 +146,15 @@ public class FileUtils {
             // Process each source path
             for (Path sourcePath : sourcePaths) {
                 if (Files.isDirectory(sourcePath)) {
-                    // logger.debug("Starting to walk directory: {}", sourcePath);
+                    if (Config.getConfigData().verbose_logging) {
+                        logger.debug("Starting to walk directory: {}", sourcePath);
+                    }
                     try (var pathStream = Files.walk(sourcePath)) {
                         // Collect files into a list for better control
                         List<Path> files = pathStream.filter(p -> !Files.isDirectory(p)).collect(Collectors.toList());
-                        // logger.debug("Found {} files in directory: {}", files.size(), sourcePath);
+                        if (Config.getConfigData().verbose_logging) {
+                            logger.debug("Found {} files in directory: {}", files.size(), sourcePath);
+                        }
 
                         // Process each file
                         for (Path path : files) {
@@ -153,7 +168,9 @@ public class FileUtils {
                     } catch (IOException e) {
                         logger.error("Error walking directory: {}", sourcePath, e);
                     }
-                    // logger.debug("Finished walking directory: {}", sourcePath);
+                    if (Config.getConfigData().verbose_logging) {
+                        logger.debug("Finished walking directory: {}", sourcePath);
+                    }
                 } else {
                     totalFiles.incrementAndGet();
                     if (processFileForArchiveCompression(format, zipOut, tarOut, serverRoot, sourcePath)) {
@@ -288,49 +305,55 @@ public class FileUtils {
     }
 
     /**
-     * Checks if the given relative path matches any of the provided filters.
-     *
-     * <p>This method evaluates the path against a list of filter patterns, which may include
-     * wildcards or directory indicators. It returns true if the path matches any filter,
-     * with the implication of the match (e.g., inclusion or exclusion) determined by the
-     * context in which the filter list is used.
-     *
-     * @param relPath the relative path to evaluate
-     * @param filters the list of filter patterns to check against
-     * @return true if the path matches any filter, false otherwise
-     */
+    * Checks if the given relative path matches any of the provided filters.
+    * Filters can include wildcards ('*' at start/end) or directory indicators ('/').
+    * Examples: 'logs/*.log' (matches all .log files in logs), 'config/' (matches all in config directory).
+    *
+    * @param relPath the relative path to evaluate
+    * @param filters the list of filter patterns to check against
+    * @return true if the path matches any filter, false otherwise
+    */
     public static boolean matchesAnyFilter(Path relPath, List<String> filters) {
         for (String filter : filters) {
-            filter = filter.replaceAll("\\\\", "/");
-            boolean directory = filter.endsWith("/");
-            boolean sw = filter.startsWith("*");
-            if (sw) filter = filter.substring(1);
-            boolean ew = filter.endsWith("*") || directory;
-            if (ew) filter = filter.substring(0, filter.length() - 1);
-            boolean wildCard = sw || ew;
-            boolean path = filter.contains("/");
-            if (filter.startsWith("/") && !sw) filter = filter.substring(1);
+            String normalizedFilter = filter.replaceAll("\\\\", "/");
+            boolean isDirectory = normalizedFilter.endsWith("/"); // Indicates directory match
+            boolean startsWithWildcard = normalizedFilter.startsWith("*");
+            if (startsWithWildcard)
+                normalizedFilter = normalizedFilter.substring(1);
+            boolean endsWithWildcard = normalizedFilter.endsWith("*") || isDirectory;
+            if (endsWithWildcard)
+                normalizedFilter = normalizedFilter.substring(0, normalizedFilter.length() - 1);
+            boolean hasWildcard = startsWithWildcard || endsWithWildcard;
+            boolean hasPath = normalizedFilter.contains("/"); // Indicates multi-level path
+            if (normalizedFilter.startsWith("/") && !startsWithWildcard)
+                normalizedFilter = normalizedFilter.substring(1);
 
-            if (!path && !wildCard) {
-                if (relPath.getFileName().toString().equals(filter)) return true;
-            } else if (path && !wildCard) {
-                if (relPath.toString().equals(filter)) return true;
-            } else if (sw && ew) {
-                if (relPath.toString().contains(filter)) return true;
-            } else if (sw) {
-                if (relPath.toString().endsWith(filter)) return true;
-            } else {
-                if (relPath.toString().startsWith(filter)) return true;
+            String pathString = relPath.toString();
+            if (!hasPath && !hasWildcard) { // Exact filename match
+                if (relPath.getFileName().toString().equals(normalizedFilter))
+                    return true;
+            } else if (hasPath && !hasWildcard) { // Exact path match
+                if (pathString.equals(normalizedFilter))
+                    return true;
+            } else if (startsWithWildcard && endsWithWildcard) { // Contains match
+                if (pathString.contains(normalizedFilter))
+                    return true;
+            } else if (startsWithWildcard) { // Ends with match
+                if (pathString.endsWith(normalizedFilter))
+                    return true;
+            } else { // Starts with match
+                if (pathString.startsWith(normalizedFilter))
+                    return true;
             }
         }
         return false;
     }
 
     /**
-     * Generates the SHA1 hash of a file.
+     * Generates the SHA1 hash of a file using Guava's hashing utilities.
      *
      * @param path the path to the file
-     * @return the SHA1 hash as a string, or an empty string if an error occurs
+     * @return the SHA1 hash as a hexadecimal string, or an empty string if an error occurs
      */
     public static String generateFileSha1(Path path) {
         Logger logger = BackupHandler.getCurrentLogger();
@@ -344,10 +367,10 @@ public class FileUtils {
     }
 
     /**
-     * Generates the SHA1 hash of a directory by hashing all files within it.
+     * Generates the SHA1 hash of a directory by combining the hashes of all files within it.
      *
      * @param directory the path to the directory
-     * @return the combined SHA1 hash as a string, or an empty string if an error occurs
+     * @return the combined SHA1 hash as a hexadecimal string, or an empty string if an error occurs
      */
     public static String generateDirectorySha1(Path directory) {
         Logger logger = BackupHandler.getCurrentLogger();
@@ -359,25 +382,29 @@ public class FileUtils {
                         HashCode hash = com.google.common.io.Files.asByteSource(path.toFile()).hash(Hashing.sha1());
                         hasher.putBytes(hash.asBytes());
                     } catch (IOException e) {
-                        logger.warn("Error hashing file: {}", path, e);
+                        logger.warn("Error hashing file {}: {}", path, e.getMessage(), e);
                     }
                 });
             }
             return hasher.hash().toString();
         } catch (IOException e) {
-            logger.error("Error walking directory for SHA1: {}", directory, e);
+            logger.error("Error walking directory for SHA1 {}: {}", directory, e.getMessage(), e);
             return "";
         }
     }
 
     /**
-     * Gets the total size of a folder, including all files within it.
+     * Calculates the total size of a folder, including all files within it recursively.
+     * Returns 0 if the path does not exist or an error occurs during traversal.
      *
-     * @param folder the path to the folder
+     * @param folder the path to the folder or file
      * @return the total size in bytes
      */
     public static long getFolderSize(Path folder) {
         Logger logger = BackupHandler.getCurrentLogger();
+        if (Config.getConfigData().verbose_logging) {
+            logger.debug("Calculating size of: {}", folder);
+        }
         if (!Files.exists(folder)) {
             return 0L;
         }
@@ -407,32 +434,10 @@ public class FileUtils {
     }
 
     /**
-     * Converts the size of a path to a human-readable string.
-     *
-     * @param path the path to measure
-     * @return the size as a string (e.g., "1.5GB")
-     */
-    public static String convertSizeToReadableString(Path path) {
-        long size = getFolderSize(path);
-        return convertSizeToReadableString((double) size);
-    }
-
-    /**
-     * Converts the size of a file to a human-readable string.
-     *
-     * @param file the file to measure
-     * @return the size as a string (e.g., "1.5GB")
-     */
-    public static String convertSizeToReadableString(File file) {
-        long size = getFileOrFolderSize(file);
-        return convertSizeToReadableString((double) size);
-    }
-
-    /**
-     * Converts a size in bytes to a human-readable string.
+     * Converts a size in bytes to a human-readable string (e.g., "1.5GB").
      *
      * @param b the size in bytes
-     * @return the formatted size string (e.g., "1.5GB")
+     * @return the formatted size string (e.g., "1.5GB", "500MB")
      */
     public static String convertSizeToReadableString(double b) {
         if (b >= TB_D) {
@@ -445,6 +450,26 @@ public class FileUtils {
             return String.format("%.1fKB", b / KB_D);
         }
         return ((long) b) + "B";
+    }
+
+    /**
+     * Converts the size of a path to a human-readable string.
+     *
+     * @param path the path to measure
+     * @return the size as a string (e.g., "1.5GB")
+     */
+    public static String convertSizeToReadableString(Path path) {
+        return convertSizeToReadableString((double) getFolderSize(path));
+    }
+
+    /**
+     * Converts the size of a file to a human-readable string.
+     *
+     * @param file the file to measure
+     * @return the size as a string (e.g., "1.5GB")
+     */
+    public static String convertSizeToReadableString(File file) {
+        return convertSizeToReadableString((double) getFileOrFolderSize(file));
     }
 
     /**
@@ -479,10 +504,12 @@ public class FileUtils {
     }
 
     /**
-     * Checks if a path is a sub-path of another path.
+     * Checks if a path is a sub-path of another path using recursive parent traversal.
+     * Note: For extremely deep directory structures, this could theoretically cause a stack overflow,
+     * but such cases are rare in typical Minecraft server setups.
      *
      * @param path the path to check
-     * @param parent the parent path
+     * @param parent the parent path to compare against
      * @return true if the path is a sub-path of the parent, false otherwise
      */
     public static boolean isSubPathOf(Path path, Path parent) {

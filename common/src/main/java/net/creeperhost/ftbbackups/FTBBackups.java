@@ -43,23 +43,26 @@ public class FTBBackups {
             "Status Monitor", statusMonitorLogger);
     public static final ExecutorService backupExecutor = createExecutor("Backup Executor", backupExecutorLogger);
 
-    public static MinecraftServer minecraftServer;
+    public static volatile MinecraftServer minecraftServer;
+    public static volatile boolean isShutdown = false;
     public static Scheduler scheduler;
-    public static boolean isShutdown = false;
 
     /**
      * Initializes the FTB Backups mod, setting up configuration, logging, and scheduling tasks.
      */
     public static void init() {
         LOGGER.info("Starting FTB Backups initialization...");
-        Config.init(configFile.toFile());
+        try {
+            Config.init(configFile.toFile());
+            LOGGER.debug("Configuration loaded from {}", configFile.toString());
+        } catch (Exception e) {
+            LOGGER.error("Failed to load configuration from {}. Using default values.", configFile.toString(), e);
+        }
 
         setLoggerLevel(LOGGER, Config.getConfigData().logging_level);
         setLoggerLevel(backupCleanerLogger, Config.getConfigData().logging_level);
         setLoggerLevel(backupExecutorLogger, Config.getConfigData().logging_level);
         setLoggerLevel(statusMonitorLogger, Config.getConfigData().logging_level);
-
-        LOGGER.debug("Configuration loaded from {}", configFile.toString());
 
 
         LOGGER.debug("Registering commands and events...");
@@ -137,6 +140,12 @@ public class FTBBackups {
         }
     }
 
+    /**
+    * Updates the backup schedule with a new cron expression.
+    *
+    * @param newCron The new cron expression to apply.
+    * @throws SchedulerException If the scheduler fails to reschedule or the cron expression is invalid.
+    */
     public static void updateBackupSchedule(String newCron) throws SchedulerException {
         if (scheduler == null || !scheduler.isStarted()) {
             LOGGER.warn("Scheduler is not running, cannot update backup schedule.");
@@ -170,8 +179,8 @@ public class FTBBackups {
     }
 
     /**
-     * Handles mod shutdown, ensuring backups are not running and cleaning up resources.
-     */
+    * Handles mod shutdown, ensuring backups are not running and cleaning up resources.
+    */
     public static void onShutdown() {
         if (isShutdown) {
             LOGGER.debug("Shutdown already in progress, skipping.");
@@ -181,104 +190,28 @@ public class FTBBackups {
         LOGGER.info("Starting shutdown process for FTB Backups...");
         isShutdown = true;
 
-        // Step 1: Shut down the Quartz scheduler
+        // Shut down the Quartz scheduler
         if (scheduler != null) {
             try {
-                if (!scheduler.isShutdown()) {
-                    scheduler.shutdown(true);
-                    LOGGER.debug("Quartz scheduler shutdown initiated.");
-                    long startTime = System.currentTimeMillis();
-                    while (!scheduler.isShutdown() && (System.currentTimeMillis() - startTime) < 2000) {
-                        Thread.sleep(100);
-                    }
-                    if (scheduler.isShutdown()) {
-                        LOGGER.debug("Quartz scheduler shut down successfully.");
-                    } else {
-                        LOGGER.warn("Quartz scheduler did not shut down within 2 seconds, forcing termination.");
-                        try {
-                            scheduler.shutdown(false);
-                            if (scheduler.isShutdown()) {
-                                LOGGER.debug("Quartz scheduler forcibly shut down successfully.");
-                            } else {
-                                LOGGER.error("Quartz scheduler failed to shut down even after forcing.");
-                            }
-                        } catch (SchedulerException ex) {
-                            LOGGER.error("Failed to force shutdown Quartz scheduler", ex);
-                        }
-                    }
-                } else {
-                    LOGGER.debug("Quartz scheduler is already shut down.");
-                }
+                scheduler.shutdown(true);
+                LOGGER.debug("Quartz scheduler shutdown initiated.");
             } catch (SchedulerException e) {
                 LOGGER.error("Error shutting down Quartz scheduler", e);
                 try {
                     scheduler.shutdown(false);
-                    if (scheduler.isShutdown()) {
-                        LOGGER.debug("Quartz scheduler forcibly shut down after error.");
-                    } else {
-                        LOGGER.error("Quartz scheduler failed to shut down even after forcing.");
-                    }
+                    LOGGER.debug("Quartz scheduler forcibly shut down.");
                 } catch (SchedulerException ex) {
                     LOGGER.error("Failed to force shutdown Quartz scheduler", ex);
                 }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                LOGGER.error("Thread interrupted while waiting for Quartz scheduler shutdown", e);
             }
         }
 
-        // Step 2: Shut down the backup cleaner executor
-        if (backupCleanerExecutorService != null && !backupCleanerExecutorService.isShutdown()) {
-            try {
-                backupCleanerExecutorService.shutdown();
-                if (!backupCleanerExecutorService.awaitTermination(5, TimeUnit.SECONDS)) {
-                    LOGGER.warn("Backup cleaner executor did not terminate within 5 seconds, forcing shutdown.");
-                    backupCleanerExecutorService.shutdownNow();
-                } else {
-                    LOGGER.debug("Backup cleaner executor shut down successfully.");
-                }
-            } catch (InterruptedException e) {
-                backupCleanerExecutorService.shutdownNow();
-                Thread.currentThread().interrupt();
-                LOGGER.error("Interrupted while shutting down backup cleaner executor", e);
-            }
-        }
+        // Shut down all executors
+        shutdownExecutor(backupCleanerExecutorService, "Backup Cleaner Executor");
+        shutdownExecutor(backupExecutor, "Backup Executor");
+        shutdownExecutor(statusMonitorExecutorService, "Status Monitor Executor");
 
-        // Step 3: Shut down the backup executor
-        if (backupExecutor != null && !backupExecutor.isShutdown()) {
-            try {
-                backupExecutor.shutdown();
-                if (!backupExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
-                    LOGGER.warn("Backup executor did not terminate within 5 seconds, forcing shutdown.");
-                    backupExecutor.shutdownNow();
-                } else {
-                    LOGGER.debug("Backup executor shut down successfully.");
-                }
-            } catch (InterruptedException e) {
-                backupExecutor.shutdownNow();
-                Thread.currentThread().interrupt();
-                LOGGER.error("Interrupted while shutting down backup executor", e);
-            }
-        }
-
-        // Step 4: Shut down the status monitor executor
-        if (statusMonitorExecutorService != null && !statusMonitorExecutorService.isShutdown()) {
-            try {
-                statusMonitorExecutorService.shutdown();
-                if (!statusMonitorExecutorService.awaitTermination(5, TimeUnit.SECONDS)) {
-                    LOGGER.warn("Status monitor executor did not terminate within 5 seconds, forcing shutdown.");
-                    statusMonitorExecutorService.shutdownNow();
-                } else {
-                    LOGGER.debug("Status monitor executor shut down successfully.");
-                }
-            } catch (InterruptedException e) {
-                statusMonitorExecutorService.shutdownNow();
-                Thread.currentThread().interrupt();
-                LOGGER.error("Interrupted while shutting down status monitor executor", e);
-            }
-        }
-
-        // Step 5: Finalize shutdown tasks
+        // Finalize shutdown tasks
         try {
             BackupHandler.backupRunning.set(false);
             BackupHandler.updateJson();
@@ -288,9 +221,35 @@ public class FTBBackups {
         }
 
         // Log active threads for debugging
-        LOGGER.debug("Checking for remaining active threads...");
-        Thread.getAllStackTraces().keySet().forEach(
-                thread -> LOGGER.debug("Thread still active: " + thread.getName() + ", Daemon: " + thread.isDaemon()));
+        if (Config.getConfigData().verbose_logging) {
+            LOGGER.debug("Checking for remaining active threads...");
+            Thread.getAllStackTraces().keySet().forEach(
+                    thread -> LOGGER.debug("Thread still active: {} (Daemon: {})", thread.getName(), thread.isDaemon()));
+        }
+    }
+
+    /**
+    * Shuts down an executor service gracefully, forcing termination if it doesn't stop within 5 seconds.
+    *
+    * @param executor The executor service to shut down.
+    * @param name     The name of the executor for logging purposes.
+    */
+    private static void shutdownExecutor(ExecutorService executor, String name) {
+        if (executor != null && !executor.isShutdown()) {
+            try {
+                executor.shutdown();
+                if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                    LOGGER.warn("{} did not terminate within 5 seconds, forcing shutdown.", name);
+                    executor.shutdownNow();
+                } else {
+                    LOGGER.debug("{} shut down successfully.", name);
+                }
+            } catch (InterruptedException e) {
+                executor.shutdownNow();
+                Thread.currentThread().interrupt();
+                LOGGER.error("Interrupted while shutting down {}", name, e);
+            }
+        }
     }
 
     /**
