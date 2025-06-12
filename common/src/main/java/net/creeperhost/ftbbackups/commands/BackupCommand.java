@@ -19,6 +19,8 @@ import net.minecraft.commands.Commands;
 import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerPlayer;
+
 import org.quartz.SchedulerException;
 import org.quartz.TriggerKey;
 
@@ -96,6 +98,11 @@ public class BackupCommand {
         return SharedSuggestionProvider.suggest(new String[0], builder);
     };
 
+    /**
+     * Registers the /backup command and its subcommands with Brigadier.
+     *
+     * @return The root command builder for the backup command.
+     */
     public static LiteralArgumentBuilder<CommandSourceStack> register() {
         return Commands.literal("backup")
                 .requires(cs -> cs.hasPermission(hasPerm(cs.getServer())))
@@ -144,6 +151,14 @@ public class BackupCommand {
         return 0;
     }
 
+    /**
+     * Executes a backup command (start or snapshot) with an optional name.
+     *
+     * @param cs      The command context.
+     * @param command The subcommand ("start" or "snapshot").
+     * @param name    The optional name for the backup.
+     * @return 0 on success or failure (with feedback).
+     */
     private static int execute(CommandContext<CommandSourceStack> cs, String command, String name) {
         boolean isProtected = command.toLowerCase(Locale.ROOT).equals("snapshot");
         int manualBackupsTime = Config.getConfigData().manual_backups_time;
@@ -168,42 +183,54 @@ public class BackupCommand {
         return 0;
     }
     
+    /**
+     * Lists all available backups for the command issuer.
+     *
+     * @param context The command context.
+     * @return 1 on success, 0 on failure.
+     */
     private static int listBackups(CommandContext<CommandSourceStack> context) {
+        PlayerInfo playerInfo = PlayerInfo.fromContext(context);
+        FTBBackups.LOGGER.debug("Listing backups requested by {}", playerInfo.getName());
         List<Backup> backupList = new ArrayList<>(BackupHandler.backups.get().getBackups());
         if (backupList.isEmpty()) {
             context.getSource().sendSuccess(() -> Component.literal("No backups available."), false);
+            FTBBackups.LOGGER.debug("No backups found for {}", playerInfo.getName());
             return 1;
         }
-
         backupList.sort(Comparator.comparingLong(Backup::getCreateTime).reversed());
+        userSnapshots.put(playerInfo.getUUID(), new ArrayList<>(backupList));
 
-        // Safely determine UUID: use player UUID if available, otherwise use a default for console
-        UUID playerUUID = (context.getSource().getPlayer() != null) 
-            ? context.getSource().getPlayer().getUUID() 
-            : new UUID(0, 0);
-        userSnapshots.put(playerUUID, new ArrayList<>(backupList));
-
-        // Header with colors
-        String header = "§fIndex. §eName §b(Created, §aSize, §dComplete, §6Protected§b)";
         context.getSource().sendSuccess(() -> Component.literal("§6Backups:"), false);
-        context.getSource().sendSuccess(() -> Component.literal(header), false);
+        context.getSource().sendSuccess(() -> Component.literal("§fIndex. §eName §b(Created, §aSize, §dComplete, §6Protected§b)"), false);
         context.getSource().sendSuccess(() -> Component.literal("§7----------------------------------------"), false);
 
         for (int i = 0; i < backupList.size(); i++) {
-            Backup backup = backupList.get(i);
-            String index = "§f" + (i + 1) + "§r";
-        String name = backup.getBackupName() != null && !backup.getBackupName().isEmpty() 
-            ? "§e" + truncate(backup.getBackupName(), 15) + "§r" 
-            : "§eUnnamed§r";
-            String created = "§b" + formatTime(backup.getCreateTime()) + "§r";
-            String size = "§a" + formatSize(backup.getSize()) + "§r";
-            String complete = backup.isComplete() ? "§dYes§r" : "§dNo§r";
-            String snapshot = backup.isProtected() ? "§6Yes§r" : "§6No§r";
-
-        String message = String.format("%s. %-15s (%s, %s, %s, %s)", index, name, created, size, complete, snapshot);
+            String message = formatBackupEntry(backupList.get(i), i + 1);
             context.getSource().sendSuccess(() -> Component.literal(message), false);
         }
+        if (Config.getConfigData().verbose_logging) {
+            FTBBackups.LOGGER.debug("Listed {} backups for {}", backupList.size(), playerInfo.getName());
+        }
         return 1;
+    }
+
+    /**
+     * Formats a backup entry for display in the backup list.
+     *
+     * @param backup The backup to format.
+     * @param index  The index of the backup in the list (1-based).
+     * @return A formatted string with color codes.
+     */
+    private static String formatBackupEntry(Backup backup, int index) {
+        String name = backup.getBackupName() != null && !backup.getBackupName().isEmpty()
+                ? "§e" + truncate(backup.getBackupName(), 15) + "§r"
+                : "§eUnnamed§r";
+        String created = "§b" + formatTime(backup.getCreateTime()) + "§r";
+        String size = "§a" + formatSize(backup.getSize()) + "§r";
+        String complete = backup.isComplete() ? "§dYes§r" : "§dNo§r";
+        String snapshot = backup.isProtected() ? "§6Yes§r" : "§6No§r";
+        return String.format("§f%d§r. %-15s (%s, %s, %s, %s)", index, name, created, size, complete, snapshot);
     }
 
     private static String truncate(String str, int length) {
@@ -233,22 +260,19 @@ public class BackupCommand {
     }
 
     private static int removeBackup(CommandContext<CommandSourceStack> context, int index) {
-        UUID playerUUID = (context.getSource().getPlayer() != null) 
-            ? context.getSource().getPlayer().getUUID() 
-            : new UUID(0, 0);
-        List<Backup> snapshot = userSnapshots.get(playerUUID);
+        PlayerInfo playerInfo = PlayerInfo.fromContext(context);
+        List<Backup> snapshot = userSnapshots.get(playerInfo.getUUID());
         if (snapshot == null || index < 1 || index > snapshot.size()) {
             context.getSource().sendFailure(Component.literal("Invalid backup index: " + index + ". Please run '/backup list' first."));
             return 0;
         }
-
         Backup backup = snapshot.get(index - 1);
         String uniqueId = generateUniqueId(backup);
-        pendingDeletions.put(playerUUID, uniqueId);
+        pendingDeletions.put(playerInfo.getUUID(), uniqueId);
 
         // Schedule timeout for pending deletion
         FTBBackups.statusMonitorExecutorService.schedule(() -> {
-            pendingDeletions.remove(playerUUID);
+            pendingDeletions.remove(playerInfo.getUUID());
         }, 60, TimeUnit.SECONDS);
 
         // Send confirmation message
@@ -266,10 +290,8 @@ public class BackupCommand {
     }
     
     private static int confirmRemove(CommandContext<CommandSourceStack> context) {
-        UUID playerUUID = (context.getSource().getPlayer() != null) 
-            ? context.getSource().getPlayer().getUUID() 
-            : new UUID(0, 0);
-        String uniqueId = pendingDeletions.remove(playerUUID);
+        PlayerInfo playerInfo = PlayerInfo.fromContext(context);
+        String uniqueId = pendingDeletions.remove(playerInfo.getUUID());
         if (uniqueId == null) {
             context.getSource().sendFailure(Component.literal("No pending deletion to confirm."));
             return 0;
@@ -283,9 +305,7 @@ public class BackupCommand {
         if (backupOpt.isPresent()) {
             BackupHandler.deleteBackup(backupOpt.get());
             context.getSource().sendSuccess(() -> Component.literal("Backup removed successfully."), false);
-            FTBBackups.LOGGER.info("Player {} removed backup with ID: {}", 
-                context.getSource().getPlayer() != null ? context.getSource().getPlayer().getName().getString() : "Console", 
-                uniqueId);
+            FTBBackups.LOGGER.info("Player {} removed backup with ID: {}", playerInfo.getName(), uniqueId);
         } else {
             context.getSource().sendFailure(Component.literal("Backup not found."));
         }
@@ -392,46 +412,57 @@ public class BackupCommand {
         return 1;
     }
 
+    /**
+     * Sets a configuration option to a new value.
+     *
+     * @param context    The command context.
+     * @param optionName The name of the config option.
+     * @param valueStr   The new value as a string.
+     * @return 1 on success, 0 on failure.
+     */
     private static int setConfig(CommandContext<CommandSourceStack> context, String optionName, String valueStr) {
+        PlayerInfo playerInfo = PlayerInfo.fromContext(context);
         ConfigOption<?> option = CONFIG_OPTIONS.get(optionName);
         if (option == null) {
             context.getSource().sendFailure(Component.literal("Unknown config option: " + optionName));
+            FTBBackups.LOGGER.warn("Invalid config option '{}' attempted by {}", optionName, playerInfo.getName());
             return 0;
         }
 
         ConfigData config = Config.getConfigData();
         try {
             if (option.type == List.class) {
-                // Get the current list
-                @SuppressWarnings("unchecked")
                 List<String> currentList = new ArrayList<>((List<String>) option.getter.apply(config));
-
-                // Split the input into action and value parts
                 String[] parts = valueStr.split(" ", 2);
                 String action = parts[0].toLowerCase();
                 String value = parts.length > 1 ? parts[1] : "";
 
                 if (action.equals("add")) {
                     if (value.isEmpty()) {
-                        context.getSource().sendFailure(Component.literal("No value provided to add."));
+                        context.getSource().sendFailure(Component.literal("No value provided to add to " + optionName));
+                        FTBBackups.LOGGER.warn("No value provided for 'add' to '{}' by {}", optionName,
+                                playerInfo.getName());
                         return 0;
                     }
                     currentList.add(value.trim());
                     option.setter.accept(config, String.join(",", currentList));
                     context.getSource().sendSuccess(() -> Component.literal("Added " + value + " to " + optionName), false);
+                    FTBBackups.LOGGER.info("Added '{}' to '{}' by {}", value, optionName, playerInfo.getName());
                 } else if (action.equals("remove")) {
                     if (value.isEmpty()) {
-                        context.getSource().sendFailure(Component.literal("No value provided to remove."));
+                        context.getSource().sendFailure(Component.literal("No value provided to remove from " + optionName));
+                        FTBBackups.LOGGER.warn("No value provided for 'remove' from '{}' by {}", optionName, playerInfo.getName());
                         return 0;
                     }
                     if (!currentList.remove(value.trim())) {
-                        context.getSource().sendFailure(Component.literal("Value not found in " + optionName + ": " + value));
+                        context.getSource().sendFailure(Component.literal("Value '" + value + "' not found in " + optionName));
+                        FTBBackups.LOGGER.warn("Value '{}' not found in '{}' for removal by {}", value, optionName, playerInfo.getName());
                         return 0;
                     }
                     option.setter.accept(config, String.join(",", currentList));
                     context.getSource().sendSuccess(() -> Component.literal("Removed " + value + " from " + optionName), false);
+                    FTBBackups.LOGGER.info("Removed '{}' from '{}' by {}", value, optionName, playerInfo.getName());
                 } else {
-                    // Treat the entire valueStr as a comma-separated list
                     String[] items = valueStr.split(",");
                     List<String> newList = new ArrayList<>();
                     for (String item : items) {
@@ -442,13 +473,15 @@ public class BackupCommand {
                     }
                     option.setter.accept(config, String.join(",", newList));
                     context.getSource().sendSuccess(() -> Component.literal("Set " + optionName + " to " + String.join(", ", newList)), false);
+                    FTBBackups.LOGGER.info("Set '{}' to '{}' by {}", optionName, String.join(", ", newList), playerInfo.getName());
                 }
             } else {
-                // Handle non-list options as before
                 if (option.type == boolean.class) {
                     String lowerValue = valueStr.toLowerCase();
                     if (!lowerValue.equals("true") && !lowerValue.equals("false")) {
-                        context.getSource().sendFailure(Component.literal("Invalid boolean value: " + valueStr + ". Use 'true' or 'false'."));
+                        context.getSource().sendFailure(Component.literal("Invalid boolean value for " + optionName
+                                + ": " + valueStr + ". Use 'true' or 'false'."));
+                        FTBBackups.LOGGER.warn("Invalid boolean value '{}' for '{}' by {}", valueStr, optionName, playerInfo.getName());
                         return 0;
                     }
                     option.setter.accept(config, lowerValue);
@@ -474,9 +507,11 @@ public class BackupCommand {
                     option.setter.accept(config, format.name());
                 } else {
                     context.getSource().sendFailure(Component.literal("Unsupported config type for " + optionName));
+                    FTBBackups.LOGGER.error("Unsupported config type for '{}' by {}", optionName, playerInfo.getName());
                     return 0;
                 }
                 context.getSource().sendSuccess(() -> Component.literal("Set " + optionName + " to " + valueStr), false);
+                FTBBackups.LOGGER.info("Set '{}' to '{}' by {}", optionName, valueStr, playerInfo.getName());
             }
 
             // Save the updated configuration
@@ -486,24 +521,57 @@ public class BackupCommand {
             // Handle special cases
             if (optionName.equals("backup_cron")) {
                 FTBBackups.updateBackupSchedule(valueStr);
+                FTBBackups.LOGGER.info("Backup schedule updated to '{}' by {}", valueStr, playerInfo.getName());
             }
             if (optionName.equals("logging_level")) {
                 FTBBackups.setLoggerLevel(FTBBackups.LOGGER, config.logging_level);
                 FTBBackups.setLoggerLevel(FTBBackups.backupCleanerLogger, config.logging_level);
                 FTBBackups.setLoggerLevel(FTBBackups.backupExecutorLogger, config.logging_level);
                 FTBBackups.setLoggerLevel(FTBBackups.statusMonitorLogger, config.logging_level);
+                FTBBackups.LOGGER.info("Logging level updated to '{}' by {}", config.logging_level, playerInfo.getName());
             }
         } catch (NumberFormatException e) {
             context.getSource().sendFailure(Component.literal("Invalid number format for " + optionName + ": " + valueStr));
+            FTBBackups.LOGGER.warn("Invalid number format '{}' for '{}' by {}", valueStr, optionName, playerInfo.getName());
             return 0;
         } catch (IllegalArgumentException e) {
             context.getSource().sendFailure(Component.literal("Invalid value for " + optionName + ": " + valueStr));
+            FTBBackups.LOGGER.warn("Invalid value '{}' for '{}' by {}", valueStr, optionName, playerInfo.getName());
             return 0;
         } catch (Exception e) {
             context.getSource().sendFailure(Component.literal("Failed to set " + optionName + ": " + e.getMessage()));
+            FTBBackups.LOGGER.error("Failed to set '{}' to '{}': {}", optionName, valueStr, e.getMessage(), e);
             return 0;
         }
         return 1;
+    }
+
+    private static class PlayerInfo {
+        private final UUID uuid;
+        private final String name;
+
+        private PlayerInfo(UUID uuid, String name) {
+            this.uuid = uuid;
+            this.name = name;
+        }
+
+        public static PlayerInfo fromContext(CommandContext<CommandSourceStack> context) {
+            ServerPlayer player = context.getSource().getPlayer();
+            if (player != null) {
+                return new PlayerInfo(player.getUUID(), player.getName().getString());
+            } else {
+                // Default for console or non-player sources
+                return new PlayerInfo(new UUID(0, 0), "Console");
+            }
+        }
+
+        public UUID getUUID() {
+            return uuid;
+        }
+
+        public String getName() {
+            return name;
+        }
     }
     
     private static int configHelp(CommandContext<CommandSourceStack> context) {
