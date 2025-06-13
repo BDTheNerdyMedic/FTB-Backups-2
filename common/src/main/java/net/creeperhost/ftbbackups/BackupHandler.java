@@ -105,11 +105,11 @@ public class BackupHandler {
      * @param minecraftServer The Minecraft server instance.
      */
     public static void init(MinecraftServer minecraftServer) {
-        FTBBackups.LOGGER.info("[BackupHandler] Initializing backup system...");
+        FTBBackups.LOGGER.info("Initializing backup system...");
         serverRoot = minecraftServer.getServerDirectory().normalize().toAbsolutePath();
         defaultBackupLocation = serverRoot.resolve("backups");
 
-        FTBBackups.LOGGER.debug("[BackupHandler] Setting server root to: {}", serverRoot);
+        FTBBackups.LOGGER.debug("Setting server root to: {}", serverRoot);
         FTBBackups.LOGGER.debug("Default backup location set to: {}", defaultBackupLocation);
 
         if (!Config.getConfigData().backup_location.equalsIgnoreCase(".")) {
@@ -119,7 +119,7 @@ public class BackupHandler {
                     FTBBackups.LOGGER.info("Using configured backups directory at {}", configPath.toAbsolutePath());
                     backupFolderPath = configPath;
                 } else {
-                    FTBBackups.LOGGER.error("[BackupHandler] Backup directory {} not found, falling back to default: {}", configPath.toAbsolutePath(), defaultBackupLocation);
+                    FTBBackups.LOGGER.error("Backup directory {} not found, falling back to default: {}", configPath.toAbsolutePath(), defaultBackupLocation);
                     backupFolderPath = defaultBackupLocation;
                 }
             } catch (Exception e) {
@@ -128,7 +128,7 @@ public class BackupHandler {
                 backupFolderPath = defaultBackupLocation;
             }
         } else {
-            FTBBackups.LOGGER.info("No custom backup location specified, using default: {}", defaultBackupLocation);
+            FTBBackups.LOGGER.info("No custom backup location specified, using default");
             backupFolderPath = defaultBackupLocation;
         }
 
@@ -347,12 +347,12 @@ public class BackupHandler {
         // Check disk space
         long minFreeSpace = Config.getConfigData().minimum_free_space * 1000000L;
         long free = backupFolderPath.toFile().getUsableSpace() - minFreeSpace;
-        long currentWorldSize = FileUtils.getFolderSize(worldFolder);
+        long currentWorldSize = FileUtils.getPathSize(worldFolder);
         for (String p : Config.getConfigData().additional_paths) {
             try {
                 Path path = worldFolder.getParent().resolve(p);
                 if (Files.exists(path)) {
-                    currentWorldSize += FileUtils.getFolderSize(path);
+                    currentWorldSize += FileUtils.getPathSize(path);
                 }
             } catch (Exception ignored) {
             }
@@ -395,13 +395,14 @@ public class BackupHandler {
         lastAutoBackup = TieredBackupTest.getBackupTime();
         backupRunning.set(true);
 
-        logger.debug("Backup location set to: {}", backupLocation);
+        Path relativeBackupLocation = safeRelativize(backupLocation);
+        logger.debug("Backup location set to: {}", relativeBackupLocation);
         logger.debug("Last auto backup time updated to: {}", new Date(lastAutoBackup));
 
         // Submit the save operation and chain setNoSave to run after the save completes
         CompletableFuture<Void> saveFuture = minecraftServer.submit(() -> {
             if (!minecraftServer.isCurrentlySaving()) {
-                logger.info("Saving world before backup...");
+                logger.info("Saving world before backup.");
                 minecraftServer.saveEverything(true, false, true);
                 logger.info("World save completed.");
             } else {
@@ -424,7 +425,8 @@ public class BackupHandler {
     private static void performBackup(MinecraftServer minecraftServer, Path backupLocation, Format format,
             Backup backup) {
         Logger logger = getCurrentLogger();
-        logger.info("Performing backup to: {}", backupLocation);
+        Path relativeBackupLocation = safeRelativize(backupLocation);
+        logger.info("Performing backup to: {}", relativeBackupLocation);
 
         try {
             alertPlayers(minecraftServer, Component.translatable(FTBBackups.MOD_ID + ".backup.starting"));
@@ -464,22 +466,23 @@ public class BackupHandler {
     private static List<Path> gatherPathsForBackup() throws IOException {
         List<Path> backupPaths = new LinkedList<>();
         Logger logger = (backupLogger != null) ? backupLogger : FTBBackups.LOGGER;
+        Path relativeWorldFolder = safeRelativize(worldFolder);
 
         // Validate and add the world folder
         if (!Files.exists(worldFolder)) {
-            logger.error("World folder does not exist: {}", worldFolder);
+            logger.error("World folder does not exist: {}", relativeWorldFolder);
             throw new IllegalStateException("World folder does not exist");
         }
         if (!Files.isDirectory(worldFolder)) {
-            logger.error("World folder is not a directory: {}", worldFolder);
+            logger.error("World folder is not a directory: {}", relativeWorldFolder);
             throw new IllegalStateException("World folder is not a directory");
         }
         if (!Files.isReadable(worldFolder)) {
-            logger.error("World folder is not readable: {}", worldFolder);
+            logger.error("World folder is not readable: {}", relativeWorldFolder);
             throw new IllegalStateException("World folder is not readable");
         }
         backupPaths.add(worldFolder);
-        logger.debug("Added world folder to backup paths: {}", worldFolder);
+        logger.debug("Added world folder to backup paths: {}", relativeWorldFolder);
 
         // Process additional paths
         List<String> additionalPaths = Config.getConfigData().additional_paths;
@@ -491,7 +494,7 @@ public class BackupHandler {
                     if (shouldInclude(dir, relativeDirectory)) {
                         backupPaths.add(dir);
                         if (Config.getConfigData().verbose_logging) {
-                            logger.debug("Added additional directory to backup: {}", dir);
+                            logger.debug("Added additional directory to backup: {}", relativeDirectory);
                         }
                     }
                     return FileVisitResult.CONTINUE;
@@ -503,18 +506,19 @@ public class BackupHandler {
                     if (shouldInclude(file, relativeFile) && !isChildOfAny(file, backupPaths)) {
                         backupPaths.add(file);
                         if (Config.getConfigData().verbose_logging) {
-                            logger.debug("Added additional file to backup: {}", file);
+                            logger.debug("Added additional file to backup: {}", relativeFile);
                         }
                     }
                     return FileVisitResult.CONTINUE;
                 }
 
                 @Override
-                public FileVisitResult visitFileFailed(Path path, IOException exc) {
+                public FileVisitResult visitFileFailed(Path path, IOException exc) {                    
+                    Path relativePath = safeRelativize(path);
                     if (exc instanceof NoSuchFileException) {
-                        logger.debug("Skipping missing file during traversal: {}", path);
+                        logger.debug("Skipping missing file during traversal: {}", relativePath);
                     } else {
-                        logger.warn("Error accessing path {}: {}", path, exc.getMessage());
+                        logger.warn("Error accessing path {}: {}", relativePath, exc.getMessage());
                     }
                     return FileVisitResult.CONTINUE;
                 }
@@ -554,7 +558,7 @@ public class BackupHandler {
         long totalSize = 0;
         for (Path path : backupPaths) {
             try {
-                totalSize += FileUtils.getFolderSize(path);
+                totalSize += FileUtils.getPathSize(path);
             } catch (Exception e) {
                 logger.warn("Failed to calculate size for path: {}", path, e);
             }
@@ -586,7 +590,7 @@ public class BackupHandler {
             return backups.get().getLastPreview();
         }
 
-        logger.info("Starting backup preview generation...");
+        logger.info("Starting backup preview generation.");
         long startTime = System.currentTimeMillis();
         try {
             Path worldPath = minecraftServer.getWorldPath(LevelResource.ROOT).toAbsolutePath();
@@ -650,7 +654,7 @@ public class BackupHandler {
     */
     private static void loadWorldForPreview(Path worldPath) throws Exception {
         Logger logger = getCurrentLogger();
-        logger.debug("Loading world from path: {}", worldPath);
+        logger.debug("Loading world from path: {}", safeRelativize(worldPath));
         PREVIEW.loadWorld(worldPath);
         logger.debug("LevelIO initialized.");
     }
@@ -913,10 +917,10 @@ public class BackupHandler {
      * @param format          The format of the backup.
      * @param startTime       The start time of the backup for timing purposes.
      */
-    private static void finalizeBackup(MinecraftServer minecraftServer, Backup backup, Path backupLocation,
-            Format format, AtomicLong startTime) {
+    private static void finalizeBackup(MinecraftServer minecraftServer, Backup backup, Path backupLocation, Format format, AtomicLong startTime) {
         Logger logger = (backupLogger != null) ? backupLogger : FTBBackups.LOGGER;
-        logger.debug("Finalizing backup at: {}", backupLocation);
+        Path relativeBackupLocation = safeRelativize(backupLocation);
+        logger.debug("Finalizing backup at: {}", relativeBackupLocation);
         setNoSave(minecraftServer, false);
         if (backupFailed.get()) {
             backupFailed.set(false);
@@ -930,16 +934,16 @@ public class BackupHandler {
         float ratio = 1;
 
         if (Files.exists(backupLocation)) {
-            backupSize = FileUtils.getFolderSize(backupLocation);
+            backupSize = FileUtils.getPathSize(backupLocation);
             if (format != Format.DIRECTORY) {
                 sha1 = FileUtils.generateFileSha1(backupLocation);
-                ratio = (float) backupSize / (float) FileUtils.getFolderSize(worldFolder);
+                ratio = (float) backupSize / (float) FileUtils.getPathSize(worldFolder);
                 logger.debug("Calculated compression ratio: {}", ratio);
             } else {
                 sha1 = FileUtils.generateDirectorySha1(backupLocation);
             }
         } else {
-            logger.error("Backup file does not exist: {}", backupLocation);
+            logger.error("Backup file does not exist: {}", relativeBackupLocation);
             backupFailed.set(true);
             backupRunning.set(false);
             alertPlayers(minecraftServer, Component.translatable(FTBBackups.MOD_ID + ".backup.failed"));
@@ -947,13 +951,12 @@ public class BackupHandler {
         }
 
         logger.debug("Backup size: {}, World size: {}", FileUtils.convertSizeToReadableString((double) backupSize),
-                FileUtils.convertSizeToReadableString((double) FileUtils.getFolderSize(worldFolder)));
+                FileUtils.convertSizeToReadableString((double) FileUtils.getPathSize(worldFolder)));
         synchronized (BACKUP_LOCK) {
             backup.setRatio(ratio).setSha1(sha1).setComplete();
             backup.setSize(backupSize);
             updateJson();
-            logger.debug("Backup finalized and JSON updated for: {}",
-                    Path.of(backup.getBackupLocation()).getFileName());
+            logger.debug("Backup finalized and JSON updated for: {}", relativeBackupLocation.getFileName());
         }
 
         long elapsedTime = System.nanoTime() - startTime.get();
@@ -963,7 +966,7 @@ public class BackupHandler {
             String msg = "Backup finished in " + format(elapsedTime) + " Size: " + FileUtils.convertSizeToReadableString((double) backupSize);
             alertPlayers(minecraftServer, Component.translatable(msg));
         }
-        logger.info("New backup created at {} size: {} Took: {} Sha1: {}", backupLocation,
+        logger.info("New backup created at {} size: {} Took: {} Sha1: {}", relativeBackupLocation,
                 FileUtils.convertSizeToReadableString((double) backupSize), format(elapsedTime), sha1);
 
         TieredBackupTest.testBackupCount++;
@@ -1013,7 +1016,7 @@ public class BackupHandler {
      */
     public static String genBackupFileName() {
         Logger logger = (backupLogger != null) ? backupLogger : FTBBackups.LOGGER;
-        logger.debug("Generating backup filename...");
+        logger.debug("Generating backup filename.");
         LocalDateTime now = LocalDateTime.now();
         DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss");
         String backupName = now.format(formatter);
@@ -1041,7 +1044,7 @@ public class BackupHandler {
      */
     public static void addBackup(Backup backup) {
         Logger logger = (backupLogger != null) ? backupLogger : FTBBackups.LOGGER;
-        logger.debug("Adding backup: {}", backup.getBackupLocation());
+        logger.debug("Adding backup: {}", safeRelativize(Path.of(backup.getBackupLocation())));
         backups.getAndUpdate(backups1 -> {
             backups1.add(backup);
             logger.debug("Backup added to list.");
@@ -1056,7 +1059,7 @@ public class BackupHandler {
      */
     public static void removeBackup(Backup backup) {
         Logger logger = (backupLogger != null) ? backupLogger : FTBBackups.LOGGER;
-        logger.debug("Removing backup from list: {}", backup.getBackupLocation());
+        logger.debug("Removing backup from list: {}", safeRelativize(Path.of(backup.getBackupLocation())));
         backups.getAndUpdate(backups1 -> {
             if (backups1.contains(backup)) {
                 backups1.remove(backup);
@@ -1075,7 +1078,7 @@ public class BackupHandler {
      */
     public static Backup getLatestBackup() {
         Logger logger = (backupLogger != null) ? backupLogger : FTBBackups.LOGGER;
-        logger.debug("Retrieving latest complete backup...");
+        logger.debug("Retrieving latest complete backup.");
         if (backups == null) {
             logger.debug("Backups reference is null.");
             return null;
@@ -1089,7 +1092,7 @@ public class BackupHandler {
                 .max(Comparator.comparingLong(Backup::getCreateTime));
         if (latestBackup.isPresent()) {
             Backup backup = latestBackup.get();
-            logger.debug("Latest backup found: {}", backup.getBackupLocation());
+            logger.debug("Latest backup found: {}", safeRelativize(Path.of(backup.getBackupLocation())));
             return backup;
         } else {
             logger.debug("No complete backups found.");
@@ -1131,7 +1134,8 @@ public class BackupHandler {
                         .filter(backup -> !backup.isComplete())
                         .collect(Collectors.toList());
                 for (Backup backup : incompleteBackups) {
-                    logger.info("Removing incomplete backup: {}", backup.getBackupLocation());
+                    Path relativeBackupLocation = safeRelativize(Path.of(backup.getBackupLocation()));
+                    logger.info("Removing incomplete backup: {}", relativeBackupLocation);
                     deleteBackup(backup);
                 }
             }
@@ -1207,7 +1211,7 @@ public class BackupHandler {
         // Remove the oldest backups directly from the sorted list
         for (int i = 0; i < backupsNeedRemoving && i < completeBackups.size(); i++) {
             Backup backupToRemove = completeBackups.get(i);
-            logger.info("Removing oldest backup: {}", backupToRemove.getBackupLocation());
+            logger.info("Removing oldest backup: {}", safeRelativize(Path.of(backupToRemove.getBackupLocation())));
             deleteBackup(backupToRemove);
         }
 
@@ -1254,7 +1258,7 @@ public class BackupHandler {
             if (!TieredBackupTest.shouldRemoveBackup(backup)) {
                 continue;
             }
-            logger.debug("Removing backup from list: {} (not retained)", backup.getBackupLocation());
+            logger.debug("Removing backup from list: {} (not retained)", safeRelativize(Path.of(backup.getBackupLocation())));
             deleteBackup(backup);
         }
 
@@ -1335,11 +1339,12 @@ public class BackupHandler {
      */
     public static void deleteBackup(Backup backup) {
         Logger logger = (backupLogger != null) ? backupLogger : FTBBackups.LOGGER;
-        logger.debug("Attempting to delete backup: {}", backup.getBackupLocation());
         Path backupFile = Path.of(backup.getBackupLocation());
+        Path relativeBackupFile = safeRelativize(backupFile);
+        logger.debug("Attempting to delete backup: {}", relativeBackupFile);
 
         if (!Files.exists(backupFile)) {
-            logger.info("Backup does not exist on disk: {}, removing from list.", backupFile);
+            logger.info("Backup does not exist on disk: {}, removing from list.", relativeBackupFile);
             removeBackup(backup);
             updateJson();
             return;
@@ -1349,20 +1354,20 @@ public class BackupHandler {
         try {
             if (backup.getBackupFormat() == Format.DIRECTORY) {
                 org.apache.commons.io.FileUtils.deleteDirectory(backupFile.toFile());
-                logger.info("Successfully deleted directory backup: {}", backupFile);
+                logger.info("Successfully deleted directory backup: {}", relativeBackupFile);
                 deletionSuccessful = true;
             } else {
                 if (Files.deleteIfExists(backupFile)) {
-                    logger.info("Successfully deleted file backup: {}", backupFile);
+                    logger.info("Successfully deleted file backup: {}", relativeBackupFile);
                     deletionSuccessful = true;
                 } else {
-                    logger.warn("Failed to delete backup file: {}", backupFile);
+                    logger.warn("Failed to delete backup file: {}", relativeBackupFile);
                 }
             }
         } catch (IOException e) {
-            logger.error("IO error while deleting backup: {} - {}", backupFile, e.getMessage(), e);
+            logger.error("IO error while deleting backup: {} - {}", relativeBackupFile, e.getMessage(), e);
         } catch (Exception e) {
-            logger.error("Unexpected error while deleting backup: {} - {}", backupFile, e.getMessage(), e);
+            logger.error("Unexpected error while deleting backup: {} - {}", relativeBackupFile, e.getMessage(), e);
         }
 
         if (deletionSuccessful) {
@@ -1378,7 +1383,7 @@ public class BackupHandler {
     public static void refreshBackupList() {
         Path json = defaultBackupLocation.resolve("backups.json");
         Logger logger = getCurrentLogger();
-        logger.debug("Refreshing backups list from JSON: {}", json);
+        logger.debug("Refreshing backups list from JSON");
         if (Files.exists(json)) {
             Gson gson = new Gson();
             try {
@@ -1401,7 +1406,7 @@ public class BackupHandler {
      */
     public static void updateJson() {
         Logger logger = (backupLogger != null) ? backupLogger : FTBBackups.LOGGER;
-        logger.debug("Updating backups.json...");
+        logger.debug("Updating backups.json.");
         try {
             String jsonString = GSON.toJson(backups.get(), Backups.class);
             writeToFile(jsonString);
@@ -1419,7 +1424,7 @@ public class BackupHandler {
     public static void writeToFile(String json) {
         Path backupsJsonPath = defaultBackupLocation.resolve("backups.json");
         Logger logger = (backupLogger != null) ? backupLogger : FTBBackups.LOGGER;
-        logger.debug("Writing to backups.json: {}", backupsJsonPath);
+        logger.debug("Writing to backups.json: {}", safeRelativize(backupsJsonPath));
         try (FileOutputStream fileOutputStream = new FileOutputStream(backupsJsonPath.toFile())) {
             byte[] jsonBytes = json.getBytes(Charset.defaultCharset());
             fileOutputStream.write(jsonBytes);
@@ -1465,11 +1470,11 @@ public class BackupHandler {
                 try {
                     Path backupPath = Path.of(backup.getBackupLocation());
                     if (!Files.exists(backupPath)) {
-                        logger.debug("Backup file missing: {}, marking for removal.", backupPath);
+                        logger.debug("Backup file missing: {}, marking for removal.", safeRelativize(backupPath));
                         toRemove.add(backup);
                     }
                 } catch (Exception e) {
-                    logger.error("Error checking backup: {}", backup.getBackupLocation(), e);
+                    logger.error("Error checking backup: {}", safeRelativize(Path.of(backup.getBackupLocation())), e);
                 }
             }
 
@@ -1495,12 +1500,12 @@ public class BackupHandler {
         if (!Files.exists(path)) {
             boolean backupFolderCreated = path.toFile().mkdirs();
             if (backupFolderCreated) {
-                logger.info("Created backup folder at: {}", path.toAbsolutePath());
+                logger.info("Created backup folder");
             } else {
                 logger.warn("Failed to create backup folder at: {}", path.toAbsolutePath());
             }
         } else {
-            logger.debug("Backup folder already exists at: {}", path.toAbsolutePath());
+            logger.debug("Backup folder already exists");
         }
     }
 
@@ -1643,7 +1648,7 @@ public class BackupHandler {
     private static long getCurrentBackupSize(Path backupPath, Format format) {
         Logger logger = (backupLogger != null) ? backupLogger : FTBBackups.LOGGER;
         try {
-            return FileUtils.getFolderSize(backupPath);
+            return FileUtils.getPathSize(backupPath);
         } catch (Exception e) {
             logger.warn("Failed to get current backup size", e);
             return 0;
@@ -1696,5 +1701,14 @@ public class BackupHandler {
     */
     public static Logger getCurrentLogger() {
         return (backupLogger != null) ? backupLogger : FTBBackups.LOGGER;
+    }
+
+    public static Path safeRelativize(Path path) {
+        try {
+            return serverRoot.relativize(path);
+        } catch (IllegalArgumentException e) {
+            // Path is not under serverRoot, return absolute path
+            return path;
+        }
     }
 }

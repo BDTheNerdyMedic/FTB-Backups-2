@@ -57,7 +57,8 @@ public class FileUtils {
      */
     public static void copySourcePathsToDirectory(Path outputDirectory, Path serverRoot, Iterable<Path> sourcePaths) throws IOException {
         Logger logger = BackupHandler.getCurrentLogger();
-        logger.debug("Starting copy operation to directory: {}", outputDirectory);
+        Path relativeOutputDirectory = BackupHandler.safeRelativize(outputDirectory);
+        logger.debug("Starting copy operation to directory: {}", relativeOutputDirectory);
 
         Path destDir = Files.createDirectory(outputDirectory);
         for (Path sourcePath : sourcePaths) {
@@ -82,23 +83,23 @@ public class FileUtils {
      */
     private static void copySingleFileToDirectory(Path destDir, Path serverRoot, Path file) {
         Logger logger = BackupHandler.getCurrentLogger();
+        Path relativeFile = BackupHandler.safeRelativize(file);
         if (shouldExcludeFileFromBackup(file)) {
-            logger.debug("Skipping file during copy: {}", file);
+            logger.debug("Skipping file during copy: {}", relativeFile);
             return;
         }
         try {
-            Path relFile = serverRoot.relativize(file);
-            if (matchesAnyFilter(relFile, Config.getConfigData().excluded_paths)) {
-                logger.debug("Skipping excluded file: {}", relFile);
+            if (matchesAnyFilter(relativeFile, Config.getConfigData().excluded_paths)) {
+                logger.debug("Skipping excluded file: {}", relativeFile);
                 return;
             }
-            Path destFile = destDir.resolve(relFile);
+            Path destFile = destDir.resolve(relativeFile);
             Files.createDirectories(destFile.getParent());
             Files.copy(file, destFile);
         } catch (java.nio.file.NoSuchFileException e) {
-            logger.debug("File disappeared during copy, skipping: {}", file);
+            logger.debug("File disappeared during copy, skipping: {}", relativeFile);
         } catch (IOException e) {
-            logger.warn("Error copying file {}: {}", file, e.getMessage(), e);
+            logger.warn("Error copying file {}: {}", relativeFile, e.getMessage(), e);
         }
     }
 
@@ -115,21 +116,22 @@ public class FileUtils {
      */
     public static void compressSourcePathsToArchive(Path archiveFilePath, Path serverRoot, Iterable<Path> sourcePaths, Format format) throws IOException {
         Logger logger = BackupHandler.getCurrentLogger();
-        logger.info("Starting compression to archive: {}", archiveFilePath);
+        Path relativeArchiveFilePath = BackupHandler.safeRelativize(archiveFilePath);
+        logger.info("Starting compression to archive: {}", relativeArchiveFilePath);
 
         // Create the archive file and its parent directories
         try {
             Files.createDirectories(archiveFilePath.getParent());
             Path archivePath = Files.createFile(archiveFilePath);
-            logger.debug("Backup file created at: {}", archivePath);
+            logger.debug("Backup file created at: {}", relativeArchiveFilePath);
         } catch (FileAlreadyExistsException e) {
-            logger.error("Backup file already exists: {}", archiveFilePath, e);
+            logger.error("Backup file already exists: {}", relativeArchiveFilePath, e);
             throw e;
         } catch (IOException e) {
-            logger.error("I/O error when creating backup file: {}", archiveFilePath, e);
+            logger.error("I/O error when creating backup file: {}", relativeArchiveFilePath, e);
             throw e;
         } catch (SecurityException e) {
-            logger.error("Security exception: write access denied for backup file: {}", archiveFilePath, e);
+            logger.error("Security exception: write access denied for backup file: {}", relativeArchiveFilePath, e);
             throw e;
         }
 
@@ -146,14 +148,15 @@ public class FileUtils {
             // Process each source path
             for (Path sourcePath : sourcePaths) {
                 if (Files.isDirectory(sourcePath)) {
+                    Path relativeSourcePath = BackupHandler.safeRelativize(sourcePath);
                     if (Config.getConfigData().verbose_logging) {
-                        logger.debug("Starting to walk directory: {}", sourcePath);
+                        logger.debug("Starting to walk directory: {}", relativeSourcePath);
                     }
                     try (var pathStream = Files.walk(sourcePath)) {
                         // Collect files into a list for better control
                         List<Path> files = pathStream.filter(p -> !Files.isDirectory(p)).collect(Collectors.toList());
                         if (Config.getConfigData().verbose_logging) {
-                            logger.debug("Found {} files in directory: {}", files.size(), sourcePath);
+                            logger.debug("Found {} files in directory", files.size());
                         }
 
                         // Process each file
@@ -166,10 +169,10 @@ public class FileUtils {
                             }
                         }
                     } catch (IOException e) {
-                        logger.error("Error walking directory: {}", sourcePath, e);
+                        logger.error("Error walking directory: {}", relativeSourcePath, e);
                     }
                     if (Config.getConfigData().verbose_logging) {
-                        logger.debug("Finished walking directory: {}", sourcePath);
+                        logger.debug("Finished walking directory");
                     }
                 } else {
                     totalFiles.incrementAndGet();
@@ -183,7 +186,7 @@ public class FileUtils {
 
             // Check if any files were added
             if (!fileAdded.get()) {
-                logger.warn("No files were added to the backup archive: {}", archiveFilePath);
+                logger.warn("No files were added to the backup archive: {}", relativeArchiveFilePath);
                 throw new IOException("No files were compressed into the backup");
             }
 
@@ -191,7 +194,7 @@ public class FileUtils {
             if (failedFiles.get() > 0) {
                 logger.warn("{} out of {} files failed to compress", failedFiles.get(), totalFiles.get());
             } else {
-                logger.info("Successfully compressed {} files into {}", totalFiles.get(), archiveFilePath);
+                logger.info("Successfully compressed {} files into {}", totalFiles.get(), relativeArchiveFilePath);
             }
         } catch (IOException e) {
             logger.error("Compression failed: {}", e.getMessage(), e);
@@ -199,7 +202,7 @@ public class FileUtils {
         } finally {
             // Verify the archive was created and is not empty
             if (!Files.exists(archiveFilePath) || Files.size(archiveFilePath) == 0) {
-                logger.error("Backup archive was not created or is empty: {}", archiveFilePath);
+                logger.error("Backup archive was not created or is empty: {}", relativeArchiveFilePath);
                 throw new IOException("Backup archive was not created or is empty");
             }
         }
@@ -218,8 +221,9 @@ public class FileUtils {
      */
     private static boolean processFileForArchiveCompression(Format format, ZipOutputStream zipOut, TarOutputStream tarOut, Path serverRoot, Path file) {
         Logger logger = BackupHandler.getCurrentLogger();
+        Path relativeFile = BackupHandler.safeRelativize(file);
         if (shouldExcludeFileFromBackup(file)) {
-            logger.debug("Skipping file during compression: {}", file);
+            logger.debug("Skipping file during compression: {}", relativeFile);
             return false;
         }
         try {
@@ -231,10 +235,10 @@ public class FileUtils {
             streamFileIntoArchive(format, zipOut, tarOut, serverRoot, file);
             return true;
         } catch (java.nio.file.NoSuchFileException e) {
-            logger.debug("File disappeared during compression, skipping: {}", file);
+            logger.debug("File disappeared during compression, skipping: {}", relativeFile);
             return false;
         } catch (IOException e) {
-            logger.warn("Error compressing file {}: {}", file, e.getMessage(), e);
+            logger.warn("Error compressing file {}: {}", relativeFile, e.getMessage(), e);
             return false;
         }
     }
@@ -280,7 +284,7 @@ public class FileUtils {
                     }
                     tarOut.flush();
                 } catch (IOException e) {
-                    logger.error("ZSTD compression error for file {}: {}", file, e.getMessage());
+                    logger.error("ZSTD compression error for file {}: {}", relFile, e.getMessage());
                     throw e;
                 }
             }
@@ -361,7 +365,7 @@ public class FileUtils {
             HashCode sha1HashCode = com.google.common.io.Files.asByteSource(path.toFile()).hash(Hashing.sha1());
             return sha1HashCode.toString();
         } catch (IOException e) {
-            logger.error("Error generating SHA1 for file {}: {}", path, e.getMessage(), e);
+            logger.error("Error generating SHA1 for file {}: {}", BackupHandler.safeRelativize(path), e.getMessage(), e);
             return "";
         }
     }
@@ -382,53 +386,68 @@ public class FileUtils {
                         HashCode hash = com.google.common.io.Files.asByteSource(path.toFile()).hash(Hashing.sha1());
                         hasher.putBytes(hash.asBytes());
                     } catch (IOException e) {
-                        logger.warn("Error hashing file {}: {}", path, e.getMessage(), e);
+                        logger.warn("Error hashing file {}: {}", BackupHandler.safeRelativize(path), e.getMessage(), e);
                     }
                 });
             }
             return hasher.hash().toString();
         } catch (IOException e) {
-            logger.error("Error walking directory for SHA1 {}: {}", directory, e.getMessage(), e);
+            logger.error("Error walking directory for SHA1 {}: {}", BackupHandler.safeRelativize(directory), e.getMessage(), e);
             return "";
         }
     }
 
     /**
-     * Calculates the total size of a folder, including all files within it recursively.
-     * Returns 0 if the path does not exist or an error occurs during traversal.
-     *
-     * @param folder the path to the folder or file
-     * @return the total size in bytes
-     */
-    public static long getFolderSize(Path folder) {
+    * Calculates the total size of a path, which can be a file or a directory.
+    * For directories, the size includes all files within it recursively.
+    * Returns 0 if the path does not exist or an error occurs during traversal.
+    *
+    * @param path the path to the file or directory
+    * @return the total size in bytes
+    */
+    public static long getPathSize(Path path) {
         Logger logger = BackupHandler.getCurrentLogger();
+        Path relativePath = BackupHandler.safeRelativize(path);
         if (Config.getConfigData().verbose_logging) {
-            logger.debug("Calculating size of: {}", folder);
+            logger.debug("Calculating size of path: {}", relativePath);
         }
-        if (!Files.exists(folder)) {
+        if (!Files.exists(path)) {
+            if (Config.getConfigData().verbose_logging) {
+                logger.debug("Path does not exist: {}", relativePath);
+            }
             return 0L;
         }
-        if (!Files.isDirectory(folder)) {
+        if (!Files.isDirectory(path)) {
+            // It's a file
             try {
-                return Files.size(folder);
+                long size = Files.size(path);
+                if (Config.getConfigData().verbose_logging) {
+                    logger.debug("Size of file: {}", convertSizeToReadableString((double) size));
+                }
+                return size;
             } catch (IOException e) {
-                logger.warn("Error getting size of file: {}", folder, e);
+                logger.warn("Error getting size of file: {}", relativePath, e);
                 return 0L;
             }
         }
-        try (var walk = Files.walk(folder)) {
-            return walk.filter(Files::isRegularFile)
-                    .mapToLong(path -> {
+        // It's a directory
+        try (var walk = Files.walk(path)) {
+            long totalSize = walk.filter(Files::isRegularFile)
+                    .mapToLong(filePath -> {
                         try {
-                            return Files.size(path);
+                            return Files.size(filePath);
                         } catch (IOException e) {
-                            logger.warn("Error getting size of file: {}", path, e);
+                            logger.warn("Error getting size of file: {}", BackupHandler.safeRelativize(filePath), e);
                             return 0L;
                         }
                     })
                     .sum();
+            if (Config.getConfigData().verbose_logging) {
+                logger.debug("Total size of directory: {}", convertSizeToReadableString((double) totalSize));
+            }
+            return totalSize;
         } catch (IOException e) {
-            logger.warn("Error walking folder: {}", folder, e);
+            logger.warn("Error walking directory: {}", relativePath, e);
             return 0L;
         }
     }
@@ -459,7 +478,7 @@ public class FileUtils {
      * @return the size as a string (e.g., "1.5GB")
      */
     public static String convertSizeToReadableString(Path path) {
-        return convertSizeToReadableString((double) getFolderSize(path));
+        return convertSizeToReadableString((double) getPathSize(path));
     }
 
     /**
@@ -492,13 +511,13 @@ public class FileUtils {
                         try {
                             return Files.size(path);
                         } catch (IOException e) {
-                            logger.warn("Error getting size of file: {}", path, e);
+                            logger.warn("Error getting size of file: {}", BackupHandler.safeRelativize(path), e);
                             return 0L;
                         }
                     })
                     .sum();
         } catch (IOException e) {
-            logger.warn("Error walking directory: {}", file, e);
+            logger.warn("Error walking directory: {}", BackupHandler.safeRelativize(file.toPath()), e);
             return 0L;
         }
     }
