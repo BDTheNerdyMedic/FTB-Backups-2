@@ -77,14 +77,13 @@ public class Config {
             }
             lastFile = targetFile;
             LOGGER.debug("Loading configuration from: {}", targetFile.getAbsolutePath());
-    
+
             JsonObject jObject = GSON.load(targetFile);
             ConfigData newData = GSON.fromJson(jObject, ConfigData.class);
-            adjustDeprecatedOptions(newData);
-    
+
             String currentJson = (DATA.get() != null) ? GSON.toJson(DATA.get()).toJson(JsonGrammar.COMPACT) : null;
             String newJson = GSON.toJson(newData).toJson(JsonGrammar.COMPACT);
-    
+
             if (currentJson == null || !currentJson.equals(newJson)) {
                 DATA.set(newData);
                 if (!configLoaded) {
@@ -99,12 +98,14 @@ public class Config {
                 return LoadResult.UNCHANGED;
             }
         } catch (IOException e) {
-            LOGGER.error("Failed to load configuration from file: {}", file != null ? file.getAbsolutePath() : "null", e);
+            LOGGER.warn("Failed to load configuration from file, using defaults: {}", file != null ? file.getAbsolutePath() : "null", e);
             DATA.set(new ConfigData());
             configLoaded = true;
             return LoadResult.UPDATED;
         } catch (Exception e) {
-            LOGGER.error("Unexpected error loading configuration", e);
+            LOGGER.error("Unexpected error loading configuration, falling back to defaults", e);
+            DATA.set(new ConfigData());
+            configLoaded = true;
             return LoadResult.FAILED;
         } finally {
             CONFIG_LOCK.unlock();
@@ -236,21 +237,20 @@ public class Config {
     }
 
     /**
-     * Adjusts deprecated configuration options to maintain compatibility.
+     * Adjusts deprecated configuration options to maintain compatibility with older versions.
      *
      * @param config The ConfigData instance to adjust.
+     * @param jObject The JsonObject containing the raw configuration data.
      */
-    private static void adjustDeprecatedOptions(ConfigData config) {
-        try {
-            JsonObject jObject = GSON.load(lastFile);
-            migrateNotificationOptions(config, jObject);
-            migratePreviewDimension(config, jObject);
-            migrateListOption(config, jObject, "additional_files", config.additional_paths);
-            migrateListOption(config, jObject, "additional_directories", config.additional_paths);
-            migrateListOption(config, jObject, "excluded", config.excluded_paths);
-        } catch (IOException | SyntaxError e) {
-            LOGGER.error("Error processing config file {}: {}", lastFile.getAbsolutePath(), e.getMessage());
-        }
+    private static void adjustDeprecatedOptions(ConfigData config, JsonObject jObject) {
+        // Migrate old notification settings to the new notification_mode enum
+        migrateNotificationOptions(config, jObject);
+        // Convert old preview_dimension to the new preview_dimensions_list
+        migratePreviewDimension(config, jObject);
+        // Migrate old list-based options to their respective target lists
+        migrateListOption(config, jObject, "additional_files", config.additional_paths);
+        migrateListOption(config, jObject, "additional_directories", config.additional_paths);
+        migrateListOption(config, jObject, "excluded", config.excluded_paths);
     }
 
     private static void migrateNotificationOptions(ConfigData config, JsonObject jObject) {
