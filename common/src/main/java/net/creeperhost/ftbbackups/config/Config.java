@@ -80,6 +80,7 @@ public class Config {
 
             JsonObject jObject = GSON.load(targetFile);
             ConfigData newData = GSON.fromJson(jObject, ConfigData.class);
+            adjustDeprecatedOptions(newData, jObject);
 
             String currentJson = (DATA.get() != null) ? GSON.toJson(DATA.get()).toJson(JsonGrammar.COMPACT) : null;
             String newJson = GSON.toJson(newData).toJson(JsonGrammar.COMPACT);
